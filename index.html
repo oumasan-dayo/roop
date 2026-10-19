@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>同じ廊下</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Virtual Joystick (left) -->
+    <div id="joystick-zone">
+      <div id="joystick-base">
+        <div id="joystick-stick"></div>
+      </div>
+    </div>
+
+    <!-- Look area indicator (subtle) -->
+    <div id="look-hint"></div>
+
+    <!-- Error overlay -->
+    <div id="error-overlay" class="hidden">
+      <div id="error-message"></div>
+    </div>
+
+    <!-- Loading -->
+    <div id="loading-overlay">
+      <div id="loading-text">読み込み中...</div>
+    </div>
+  </div>
+
+  <!-- Three.js local (no external CDN dependency) -->
+  <script src="three.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
