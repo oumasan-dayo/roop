@@ -658,3 +658,69 @@ body.state-intro #stamina-wrap {
   visibility: hidden;
   pointer-events: none;
 }
+
+/* PIN pad */
+#pin-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 95;
+  background: rgba(6, 5, 4, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+}
+#pin-panel.hidden { display: none; }
+#pin-card {
+  width: 100%;
+  max-width: 280px;
+  background: #1a1816;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  padding: 18px 16px 14px;
+  text-align: center;
+}
+#pin-title {
+  color: #c8c0b0;
+  font-size: 14px;
+  letter-spacing: 0.15em;
+  margin-bottom: 10px;
+}
+#pin-display {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 28px;
+  letter-spacing: 0.35em;
+  color: #e8e0d0;
+  background: #0e0c0a;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 14px;
+}
+#pin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+#pin-pad button {
+  height: 48px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(40, 36, 32, 0.9);
+  color: #e4dccf;
+  font-size: 18px;
+  font-family: inherit;
+}
+#pin-pad button:active {
+  background: rgba(70, 60, 50, 0.95);
+}
+#pin-close {
+  width: 100%;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: transparent;
+  color: #a09888;
+  font-size: 14px;
+}

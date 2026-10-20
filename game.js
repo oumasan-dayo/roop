@@ -11,7 +11,7 @@
   // ============================================================
   const CONFIG = {
     eyeHeight: 1.62,
-    moveSpeed: 2.4,
+    moveSpeed: 2.7,
     dashMultiplier: 1.7,
     playerRadius: 0.28,
     playerHeight: 1.7,
@@ -131,6 +131,19 @@
   // 歩行のわずかな手ブレ用
   let bobTime = 0;
   let isMoving = false;
+  let headBobTime = 0;
+  let headBobAmount = 0;
+
+  // 4周目イベント
+  let loop4Spawned = false;
+  let paintingMoved = false;
+  let safeOpened = false;
+  let hasKey = false;
+  let safeObject = null;
+  let keyObject = null;
+  let pinOpen = false;
+  let pinInput = '';
+  let paintingCenterGroup = null;
 
   const canvas = document.getElementById('game-canvas');
   const joystickBase = document.getElementById('joystick-base');
@@ -208,6 +221,7 @@
       loadingOverlay.classList.add('hidden');
       setupTitleUI();
       setupDashUI();
+      setupPinUI();
       showTitleScreen();
       animate();
 
@@ -861,7 +875,8 @@
     const doorGap = 1.15;
     const sideW = (W - doorGap) / 2;
 
-    // 入口側の壁：開口を残して左右分割（後方ドア通過用）
+    // 入口側の壁：左右＋ドア上部を壁材で連続させる（黒い穴を作らない）
+    const doorOpeningH = 2.23; // ドア＋枠の高さに合わせる
     if (sideW > 0.05) {
       const backLeft = new THREE.Mesh(new THREE.PlaneGeometry(sideW, H), wallMat.clone());
       backLeft.position.set(-halfW + sideW / 2, H / 2, 0);
@@ -870,12 +885,20 @@
       backRight.position.set(halfW - sideW / 2, H / 2, 0);
       scene.add(backRight);
     }
-    // 入口開口の奥は黒
+    // ドア上部の壁（天井まで）
+    const headerH = Math.max(0.2, H - doorOpeningH);
+    const backHeader = new THREE.Mesh(
+      new THREE.PlaneGeometry(doorGap + 0.08, headerH),
+      wallMat.clone()
+    );
+    backHeader.position.set(0, doorOpeningH + headerH / 2, 0.01);
+    scene.add(backHeader);
+    // 開口の奥はドア高さ分だけ黒（上部は壁で覆う）
     const backVoid = new THREE.Mesh(
-      new THREE.PlaneGeometry(doorGap + 0.15, H + 0.1),
+      new THREE.PlaneGeometry(doorGap + 0.1, doorOpeningH),
       new THREE.MeshBasicMaterial({ color: 0x000000 })
     );
-    backVoid.position.set(0, H / 2, -0.04);
+    backVoid.position.set(0, doorOpeningH / 2, -0.04);
     scene.add(backVoid);
 
     // 奥壁：開口を残して左右分割
@@ -1257,6 +1280,7 @@
     group.add(glass);
 
     scene.add(group);
+    if (id === 'painting_c') paintingCenterGroup = group;
     addCollider(x - 0.06, y - 0.32, z - 0.42, 0.14, 0.65, 0.84);
 
     registerInteractable({
@@ -1268,6 +1292,242 @@
       radius: 1.9,
       hx: 0.3, hy: 0.7, hz: 0.55
     });
+  }
+
+  /** 4周目：汚れ・足跡・日記 */
+  function spawnLoop4Events() {
+    if (loop4Spawned) return;
+    loop4Spawned = true;
+
+    const stainMat = new THREE.MeshStandardMaterial({
+      color: 0x4a1810,
+      roughness: 0.95,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.55
+    });
+    // 床の染み
+    [[0.4, 12], [-0.5, 20], [0.2, 32], [-0.3, 7]].forEach(function (p) {
+      const s = new THREE.Mesh(new THREE.CircleGeometry(0.18 + Math.random() * 0.12, 10), stainMat.clone());
+      s.rotation.x = -Math.PI / 2;
+      s.position.set(p[0], 0.008, p[1]);
+      scene.add(s);
+    });
+    // 壁の染み
+    const wallStain = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.35, 0.55),
+      stainMat.clone()
+    );
+    wallStain.position.set(-CONFIG.corridorWidth / 2 + 0.02, 1.1, 15);
+    wallStain.rotation.y = Math.PI / 2;
+    scene.add(wallStain);
+
+    // 足跡（奥へ）
+    const printMat = new THREE.MeshStandardMaterial({
+      color: 0x3a2018,
+      roughness: 0.98,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.4
+    });
+    for (let i = 0; i < 14; i++) {
+      const side = (i % 2 === 0) ? -0.12 : 0.12;
+      const fp = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.22), printMat);
+      fp.rotation.x = -Math.PI / 2;
+      fp.rotation.z = (i % 2 === 0 ? -0.08 : 0.08);
+      fp.position.set(side, 0.009, 5 + i * 2.4);
+      scene.add(fp);
+    }
+
+    // 日記（棚付近）
+    const diaryGroup = new THREE.Group();
+    diaryGroup.position.set(-1.15, 0.95, 8.3);
+    const cover = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.03, 0.22),
+      new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 })
+    );
+    diaryGroup.add(cover);
+    const pages = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.02, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0xd4c8a8, roughness: 0.9 })
+    );
+    pages.position.y = 0.02;
+    diaryGroup.add(pages);
+    scene.add(diaryGroup);
+
+    const diaryText =
+      '1944年○月×日\n\n' +
+      '気がつ⬛︎たら私はそこにいた。ここはどこなんだろう？でも進むし⬛︎ない。' +
+      '何回も同じ場所を進むしかないのだ⬛︎⬛︎。ニゲロ。あの大き⬛︎⬛︎に襲⬛︎れる⬛︎。でないと⬛︎⬛︎⬛︎';
+
+    registerInteractable({
+      id: 'diary',
+      kind: 'inspect',
+      label: '調べる',
+      message: diaryText,
+      position: new THREE.Vector3(-1.15, 1.0, 8.3),
+      radius: 1.8,
+      hx: 0.3, hy: 0.25, hz: 0.3
+    });
+
+    // 金庫は中央絵画の裏に待機（非表示→絵画移動後に表示）
+    createSafeBehindPainting();
+  }
+
+  function createSafeBehindPainting() {
+    const safeG = new THREE.Group();
+    // 中央絵画位置（x=-1.68, y=1.55, z=28）の壁面
+    safeG.position.set(-1.68, 1.45, 28.0);
+    safeG.rotation.y = Math.PI / 2;
+    safeG.visible = false;
+
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.42, 0.48, 0.18),
+      new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.55, metalness: 0.4 })
+    );
+    safeG.add(body);
+    const dial = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.03, 16),
+      new THREE.MeshStandardMaterial({ color: 0x888880, metalness: 0.7, roughness: 0.3 })
+    );
+    dial.rotation.x = Math.PI / 2;
+    dial.position.set(0, 0.05, 0.1);
+    safeG.add(dial);
+    const handle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.12, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x666660, metalness: 0.6, roughness: 0.35 })
+    );
+    handle.position.set(0.12, -0.05, 0.1);
+    safeG.add(handle);
+
+    // 鍵（開錠後に表示）
+    const keyG = new THREE.Group();
+    keyG.position.set(0, -0.05, 0.12);
+    keyG.visible = false;
+    const keyShaft = new THREE.Mesh(
+      new THREE.BoxGeometry(0.02, 0.02, 0.1),
+      new THREE.MeshStandardMaterial({ color: 0xb8a050, metalness: 0.7, roughness: 0.35 })
+    );
+    keyG.add(keyShaft);
+    const keyHead = new THREE.Mesh(
+      new THREE.TorusGeometry(0.025, 0.008, 8, 12),
+      new THREE.MeshStandardMaterial({ color: 0xb8a050, metalness: 0.7, roughness: 0.35 })
+    );
+    keyHead.position.z = 0.06;
+    keyG.add(keyHead);
+    safeG.add(keyG);
+    keyObject = keyG;
+
+    scene.add(safeG);
+    safeObject = safeG;
+  }
+
+  function revealSafe() {
+    if (paintingMoved) return;
+    paintingMoved = true;
+    if (paintingCenterGroup) {
+      // 絵画を少し横へずらす
+      paintingCenterGroup.position.z += 0.55;
+      paintingCenterGroup.position.x += 0.05;
+      paintingCenterGroup.rotation.y += 0.15;
+    }
+    if (safeObject) {
+      safeObject.visible = true;
+      registerInteractable({
+        id: 'safe',
+        kind: 'safe',
+        label: '調べる',
+        message: '',
+        position: new THREE.Vector3(-1.5, 1.45, 28.0),
+        radius: 1.8,
+        hx: 0.35, hy: 0.45, hz: 0.35
+      });
+    }
+  }
+
+  function openPinUI() {
+    if (safeOpened) {
+      showMessage('金庫は開いている。');
+      return;
+    }
+    pinOpen = true;
+    pinInput = '';
+    const panel = document.getElementById('pin-panel');
+    if (panel) {
+      panel.classList.remove('hidden');
+      const disp = document.getElementById('pin-display');
+      if (disp) disp.textContent = '----';
+    }
+  }
+
+  function closePinUI() {
+    pinOpen = false;
+    const panel = document.getElementById('pin-panel');
+    if (panel) panel.classList.add('hidden');
+  }
+
+  function submitPin() {
+    if (pinInput === '1944') {
+      closePinUI();
+      safeOpened = true;
+      if (keyObject) keyObject.visible = true;
+      if (safeObject) {
+        // 扉が少し開いた表現
+        safeObject.rotation.y += 0.2;
+      }
+      registerInteractable({
+        id: 'key',
+        kind: 'key',
+        label: '調べる',
+        message: '',
+        position: new THREE.Vector3(-1.5, 1.4, 28.05),
+        radius: 1.6,
+        hx: 0.25, hy: 0.25, hz: 0.25
+      });
+      showMessage('金庫が開いた。中に鍵がある。');
+    } else {
+      pinInput = '';
+      const disp = document.getElementById('pin-display');
+      if (disp) disp.textContent = '----';
+      showMessage('……違う番号のようだ。');
+      closePinUI();
+    }
+  }
+
+  function setupPinUI() {
+    const panel = document.getElementById('pin-panel');
+    if (!panel) return;
+    panel.querySelectorAll('[data-pin]').forEach(function (btn) {
+      const handler = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!pinOpen || safeOpened) return;
+        const v = btn.getAttribute('data-pin');
+        if (v === 'C') {
+          pinInput = '';
+        } else if (v === 'OK') {
+          submitPin();
+          return;
+        } else if (pinInput.length < 4) {
+          pinInput += v;
+        }
+        const disp = document.getElementById('pin-display');
+        if (disp) disp.textContent = pinInput.padEnd(4, '-');
+      };
+      btn.addEventListener('click', handler);
+      btn.addEventListener('touchend', handler, { passive: false });
+    });
+    const closeBtn = document.getElementById('pin-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        closePinUI();
+      });
+      closeBtn.addEventListener('touchend', function (e) {
+        e.preventDefault();
+        closePinUI();
+      }, { passive: false });
+    }
   }
 
   // ============================================================
@@ -1342,29 +1602,28 @@
 
     const col = addCollider(-0.65, 0, z - 0.15, 1.3, 2.35, 0.35);
 
-    // ドア枠まわりの壁パネル（開口に埋め込む）
-    if (!flip) {
+    // ドア枠まわりの壁パネル（前方・後方とも同じ構造で埋め込む）
+    {
       const wallFillMat = new THREE.MeshStandardMaterial({
         map: createWallTexture(128),
         roughness: 0.88,
         metalness: 0.02,
         color: 0xc8bca8
       });
-      // 上部の壁
+      const aboveH = CONFIG.corridorHeight - doorH - frameThick;
       const above = new THREE.Mesh(
-        new THREE.BoxGeometry(CONFIG.corridorWidth - 0.04, CONFIG.corridorHeight - doorH - 0.12, 0.08),
+        new THREE.BoxGeometry(CONFIG.corridorWidth - 0.04, Math.max(0.15, aboveH), 0.1),
         wallFillMat
       );
-      above.position.set(0, doorH + frameThick + (CONFIG.corridorHeight - doorH - 0.12) / 2, -0.02);
+      above.position.set(0, doorH + frameThick + Math.max(0.15, aboveH) / 2, -0.02);
       group.add(above);
-      // 左右の狭い壁フィラー（枠外側）
-      const fillW = (CONFIG.corridorWidth - doorW) / 2 - 0.05;
+      const fillW = (CONFIG.corridorWidth - doorW) / 2 - 0.04;
       if (fillW > 0.05) {
         const fillH = doorH + frameThick;
-        const leftFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.08), wallFillMat);
+        const leftFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.1), wallFillMat);
         leftFill.position.set(-(doorW / 2 + frameThick + fillW / 2), fillH / 2, -0.02);
         group.add(leftFill);
-        const rightFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.08), wallFillMat);
+        const rightFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.1), wallFillMat);
         rightFill.position.set(doorW / 2 + frameThick + fillW / 2, fillH / 2, -0.02);
         group.add(rightFill);
       }
@@ -1551,8 +1810,8 @@
   // MOVEMENT & COLLISION
   // ============================================================
   function updatePlayer(dt) {
-    if (settingsOpen || gameState !== 'playing' || loopInProgress) {
-      // 設定中・タイトル中・導入中もカメラ位置は同期
+    if (settingsOpen || pinOpen || gameState !== 'playing' || loopInProgress) {
+      // 設定中・暗証番号入力中・タイトル中もカメラ位置は同期
       camera.position.copy(player.position);
       camera.rotation.order = 'YXZ';
       camera.rotation.y = player.yaw;
@@ -1637,27 +1896,44 @@
 
     player.position.copy(newPos);
 
-    camera.position.copy(player.position);
+    // 歩行／走行の頭の上下動（プレイヤー位置・衝突には影響しない）
+    isMoving = len > 0.05;
+    if (isMoving) {
+      const bobSpeed = isDashing ? 11.5 : 7.2;
+      headBobTime += dt * bobSpeed;
+      const amp = isDashing ? 0.028 : 0.016;
+      headBobAmount += ((amp) - headBobAmount) * Math.min(1, dt * 8);
+    } else {
+      headBobAmount *= Math.pow(0.02, dt); // 自然に減衰
+      if (headBobAmount < 0.0005) {
+        headBobAmount = 0;
+        headBobTime = 0;
+      }
+    }
+    const bobOffset = Math.sin(headBobTime) * headBobAmount;
+
+    camera.position.set(
+      player.position.x,
+      player.position.y + bobOffset,
+      player.position.z
+    );
     camera.rotation.order = 'YXZ';
     camera.rotation.y = player.yaw;
     camera.rotation.x = player.pitch;
     camera.rotation.z = 0;
 
-    // 歩行中のさりげない手持ち揺れ（カメラ自体は揺らさない）
-    isMoving = len > 0.05;
     updateHandBob(dt);
   }
 
   function updateHandBob(dt) {
     if (!handLightGroup) return;
     if (isMoving) {
-      bobTime += dt * 7.5;
+      bobTime += dt * (isDashing ? 11 : 7.5);
     } else {
       bobTime *= 0.92;
     }
-    const bobY = Math.sin(bobTime) * 0.006;
+    const bobY = Math.sin(bobTime) * (isDashing ? 0.01 : 0.006);
     const bobX = Math.sin(bobTime * 0.5) * 0.003;
-    // createHandFlashlight の基準位置と一致させる
     handLightGroup.position.set(0.26 + bobX, -0.30 + bobY, -0.40);
   }
 
@@ -1941,6 +2217,10 @@
             addPuzzleEnvHints();
           }
         }
+        // 4周目：汚れ・足跡・日記・金庫準備
+        if (loopCount >= 4 && !loop4Spawned) {
+          spawnLoop4Events();
+        }
       }, 400);
     }, 500);
   }
@@ -2223,10 +2503,24 @@
   }
 
   function onActionPressed() {
-    if (settingsOpen || messageOpen || !currentTarget) return;
+    if (settingsOpen || messageOpen || pinOpen || !currentTarget) return;
     if (currentTarget.kind === 'door') {
       if (currentTarget.id === 'door_front') tryOpenFrontDoor();
       else if (currentTarget.id === 'door_back') tryOpenBackDoor();
+      return;
+    }
+    if (currentTarget.kind === 'safe') {
+      openPinUI();
+      return;
+    }
+    if (currentTarget.kind === 'key') {
+      if (!hasKey) {
+        hasKey = true;
+        showMessage('古い鍵を手に入れた。');
+        // 鍵メッシュを消す
+        if (keyObject) keyObject.visible = false;
+        currentTarget.radius = 0;
+      }
       return;
     }
     if (currentTarget.kind === 'inspect' || currentTarget.kind === 'paper') {
@@ -2235,7 +2529,7 @@
   }
 
   function doInspect(item) {
-    if (messageOpen) return;
+    if (messageOpen || pinOpen) return;
     const firstTime = !inspectedSet[item.id];
     inspectedSet[item.id] = true;
     item.inspected = true;
@@ -2246,9 +2540,19 @@
       return;
     }
 
+    // 4周目：中央の絵画を調べると裏の金庫が現れる
+    if (item.id === 'painting_c' && loopCount >= 4 && !paintingMoved) {
+      revealSafe();
+      showMessage('絵の裏に、何かがある……。');
+      return;
+    }
+    if (item.id === 'painting_c' && paintingMoved) {
+      showMessage('裏に金庫が取り付けられている。');
+      return;
+    }
+
     showMessage(item.message || '特に何もない。');
 
-    // 4種すべて調査後のナレーション（1回のみ・1周目想定）
     if (firstTime && !allInspectedNarrationShown) {
       const needed = ['vase', 'shelf', 'table', 'painting_l', 'painting_c', 'painting_r'];
       let all = true;
@@ -2308,7 +2612,7 @@
   }
 
   function updateInteraction() {
-    if (settingsOpen || messageOpen || gameState !== 'playing') {
+    if (settingsOpen || messageOpen || pinOpen || gameState !== 'playing') {
       currentTarget = null;
       if (actionBtn) actionBtn.classList.add('hidden');
       return;
