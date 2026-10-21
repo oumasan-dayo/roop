@@ -38,11 +38,11 @@
     flashlightDecay: 1.6,
 
     // 通常時の明るさ（設定スライダーで上書き）— さらに暗く
-    defaultBrightness: 12,
-    ambientMin: 0.004,
-    ambientMax: 0.16,
-    hemiMin: 0.003,
-    hemiMax: 0.09,
+    defaultBrightness: 18,
+    ambientMin: 0.012,
+    ambientMax: 0.22,
+    hemiMin: 0.01,
+    hemiMax: 0.14,
 
     // 感度スライダー初期値（50＝従来どおり）
     defaultLookSens: 50,
@@ -164,7 +164,7 @@
   let room4Group = null;
   let room4DoorState = null;
   let escapeExitMesh = null;
-  let chaseFaceSpeed = 4.0;
+  let chaseFaceSpeed = 2.15;
   let chapterAnnounced = {};
   let retryCheckpoint = null;
   // 顔チェイス段階: idle | emerge | chase | caught
@@ -1009,20 +1009,29 @@
       const tex = new THREE.CanvasTexture(c);
       if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
       const plate = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.28, 0.14),
+        new THREE.PlaneGeometry(0.36, 0.18),
         new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85, metalness: 0.08 })
       );
-      // 奥ドア右側の壁面（廊下内側）
-      plate.position.set(halfW - sideW * 0.35, 1.55, L - 0.02);
-      plate.rotation.y = Math.PI; // 廊下側を向く（-Z）
+      // 奥ドア右横（開口のすぐ右の壁、廊下内側）
+      const px = doorGap / 2 + 0.22;
+      const py = 1.55;
+      const pz = L - 0.025;
+      plate.position.set(px, py, pz);
+      plate.rotation.y = Math.PI; // 平面の +Z を廊下方向（-Z）へ
       scene.add(plate);
-      // 薄い台座
       const base = new THREE.Mesh(
-        new THREE.BoxGeometry(0.3, 0.16, 0.02),
+        new THREE.BoxGeometry(0.32, 0.18, 0.025),
         new THREE.MeshStandardMaterial({ color: 0x2a241c, roughness: 0.9 })
       );
-      base.position.set(halfW - sideW * 0.35, 1.55, L - 0.03);
+      base.position.set(px, py, pz - 0.01);
       scene.add(base);
+      // 念のため反対側にも同じプレート（どちらから見ても分かる）
+      const plateL = plate.clone();
+      plateL.position.set(-px, py, pz);
+      scene.add(plateL);
+      const baseL = base.clone();
+      baseL.position.set(-px, py, pz - 0.01);
+      scene.add(baseL);
     })();
 
 
@@ -2038,9 +2047,9 @@
     const faceMat = new THREE.MeshBasicMaterial({
       map: faceTex,
       transparent: true,
-      alphaTest: 0.15,
+      alphaTest: 0.02,
       side: THREE.DoubleSide,
-      depthWrite: false
+      depthWrite: true
     });
     const faceMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.75), faceMat);
     // 壁の奥（+X外側）に完全に隠す
@@ -2159,38 +2168,44 @@
   }
 
   function setupEscapeMap() {
-    // プレイヤーを廊下入口寄りへ（出口まで長い距離）
-    player.position.set(0, CONFIG.eyeHeight, 4.0);
-    player.yaw = 0; // -Z 方向を向く... yaw=0 は -Z
-    // 実際は奥ドアが +Z 側。奥へ逃げるなら yaw = Math.PI（+Z を向かない）
-    // forward = (-sin(yaw),0,-cos(yaw)); yaw=π → (0,0,1) = +Z へ前進
-    player.yaw = Math.PI;
-    player.pitch = 0;
+    // プレイヤーは白い部屋に残す（廊下へ瞬間移動しない）
+    // 机付近にいる想定。部屋内の出口（廊下側開口）へ逃げられるようにする
+    if (window._room4Bounds) {
+      const rb = window._room4Bounds;
+      // 机付近（部屋中央寄り）に軽く整えるだけ
+      const cx = (rb.xMin + rb.xMax) * 0.5;
+      const cz = (rb.zMin + rb.zMax) * 0.5;
+      // 既に部屋内なら位置は維持、外なら中央へ
+      if (player.position.x < rb.xMin + 0.5) {
+        player.position.set(cx - 8, CONFIG.eyeHeight, cz);
+      }
+      player.position.y = CONFIG.eyeHeight;
+      // 奥壁（+X）を向く
+      player.yaw = -Math.PI / 2;
+      player.pitch = 0;
+    }
     camera.position.copy(player.position);
     camera.rotation.order = 'YXZ';
     camera.rotation.y = player.yaw;
     camera.rotation.x = 0;
 
-    // 後ろドア（入口）を逃走中に使えるよう開放可能に
     enableBackDoorForEscape();
-
-    // 障害物を廊下に配置（左右に避けて進む）
     spawnEscapeObstacles();
+    // 出口光は廊下奥（後でドア通過後に使う）
+    // spawnEscapeExit は出現完了後
 
-    // 出口光は奥側
-    spawnEscapeExit();
-
-    // 顔の出現完了位置を廊下奥寄りに変更（プレイヤーから遠い）
-    if (room4Face) {
-      // プレイヤー(z≈5)の後方・十分離れた位置から出現（即死防止）
-      faceStartPos.set(0, 1.55, -2.5);
-      window._faceEmergeEnd = new THREE.Vector3(0, 1.55, 0.8);
+    // 顔：白い部屋の最奥壁のさらに奥から出現
+    if (room4Face && window._room4Bounds) {
+      const rb = window._room4Bounds;
+      // 最奥壁の外側
+      faceStartPos.set(rb.xMax + 1.4, 1.55, (rb.zMin + rb.zMax) * 0.5);
+      // 壁を越えて部屋内側へ
+      window._faceEmergeEnd = new THREE.Vector3(rb.xMax - 3.0, 1.55, (rb.zMin + rb.zMax) * 0.5);
       room4Face.position.copy(faceStartPos);
       room4Face.visible = false;
       room4Face.scale.set(1, 1, 1);
     }
-    // チェイス開始後の捕獲猶予（秒）
-    window._chaseGrace = 2.8;
+    window._chaseGrace = 3.5;
   }
 
   function enableBackDoorForEscape() {
