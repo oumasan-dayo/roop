@@ -2023,6 +2023,16 @@
       addCollider(roomX - hd, 0, roomZ + gap, 0.25, 2.7, sideLen);
     }
 
+    // 移動クランプ用：部屋の実寸（ワールド座標）
+    window._room4Bounds = {
+      xMin: roomX - hd,
+      xMax: roomX + hd - 0.3,
+      zMin: roomZ - hw + 0.3,
+      zMax: roomZ + hw - 0.3,
+      doorZ: roomZ,
+      doorHalf: (doorW || 1.0) / 2 + 0.15
+    };
+
     registerInteractable({
       id: 'room4_desk',
       kind: 'room4desk',
@@ -2927,17 +2937,32 @@
     newPos.z += moveZ;
     resolveCollisionAxis(newPos, prev, 'z');
 
-    // 安全クランプ：廊下内に強制拘束
+    // 安全クランプ：廊下／Room4 の実寸に合わせる
     const margin = CONFIG.playerRadius + 0.02;
     const halfW = playBounds.halfW;
     const frontOpen = frontDoorState && frontDoorState.open;
     const backOpen = backDoorState && backDoorState.open;
-    const zMax = frontOpen ? playBounds.zMaxOpen : playBounds.zMaxClosed;
-    const zMin = backOpen ? playBounds.zMinOpen : playBounds.zMin;
-    // Room4 開放時は右方向に部屋へ入れる
+    let zMax = frontOpen ? playBounds.zMaxOpen : playBounds.zMaxClosed;
+    let zMin = backOpen ? playBounds.zMinOpen : playBounds.zMin;
+    let xMin = -halfW + margin;
     let xMax = halfW - margin;
-    if (room4DoorState && room4DoorState.open) xMax = halfW + 5.2;
-    newPos.x = Math.max(-halfW + margin, Math.min(xMax, newPos.x));
+
+    // Room4 開放時：見た目どおり部屋全体を歩けるようにする
+    if (room4DoorState && room4DoorState.open && window._room4Bounds) {
+      const rb = window._room4Bounds;
+      xMax = rb.xMax - margin;
+      // 部屋内（右壁より外側）では Z も部屋幅まで許可
+      if (newPos.x > halfW - 0.1 || prev.x > halfW - 0.1) {
+        zMin = Math.min(zMin, rb.zMin + margin);
+        zMax = Math.max(zMax, rb.zMax - margin);
+        xMin = Math.min(xMin, rb.xMin + margin);
+      }
+    } else if (room4DoorState && room4DoorState.open) {
+      // bounds 未設定時のフォールバック（奥行き約45）
+      xMax = halfW + 44.5;
+    }
+
+    newPos.x = Math.max(xMin, Math.min(xMax, newPos.x));
     newPos.z = Math.max(zMin, Math.min(zMax, newPos.z));
     newPos.y = CONFIG.eyeHeight;
 
