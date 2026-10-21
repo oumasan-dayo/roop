@@ -135,8 +135,13 @@
   let headBobAmount = 0;
 
   // 4周目イベント
+  // ストーリー進行（loopCount・ドア通過回数とは独立）
+  // 1:導入 / 2:違和感 / 3:花瓶・暗号 / 4:異変・日記・金庫 / 5+:異変増加
+  let storyStage = 1;
+  let anomalyLevel = 0;
   let loop4Spawned = false;
-  let paintingMoved = false;
+  // 金庫: painting → code → opening → key → done
+  let safeState = 'painting';
   let safeOpened = false;
   let hasKey = false;
   let safeObject = null;
@@ -144,6 +149,7 @@
   let pinOpen = false;
   let pinInput = '';
   let paintingCenterGroup = null;
+  let anomalyRoot = null;
 
   const canvas = document.getElementById('game-canvas');
   const joystickBase = document.getElementById('joystick-base');
@@ -1294,84 +1300,270 @@
     });
   }
 
-  /** 4周目：汚れ・足跡・日記 */
+  /** 血痕テクスチャ（不規則な染み） */
+  function createBloodStainTexture(seed) {
+    const s = seed || 1;
+    const c = document.createElement('canvas');
+    c.width = 128;
+    c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 128, 128);
+    // 不規則な染みの塊
+    for (let i = 0; i < 5 + (s % 3); i++) {
+      const cx = 40 + ((s * 17 + i * 31) % 50);
+      const cy = 40 + ((s * 13 + i * 23) % 50);
+      const r = 18 + ((s + i * 7) % 20);
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      g.addColorStop(0, 'rgba(90, 20, 12, 0.75)');
+      g.addColorStop(0.45, 'rgba(60, 14, 10, 0.5)');
+      g.addColorStop(0.8, 'rgba(40, 12, 8, 0.2)');
+      g.addColorStop(1, 'rgba(30, 10, 6, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      // 歪んだ楕円
+      ctx.ellipse(cx, cy, r * (0.8 + (i % 3) * 0.15), r * (0.55 + (i % 2) * 0.2), (i * 0.7), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // にじみの小粒
+    for (let i = 0; i < 8; i++) {
+      const px = 20 + ((s * 11 + i * 19) % 90);
+      const py = 20 + ((s * 7 + i * 29) % 90);
+      ctx.fillStyle = 'rgba(70, 18, 10, ' + (0.15 + (i % 4) * 0.08) + ')';
+      ctx.beginPath();
+      ctx.arc(px, py, 2 + (i % 3), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  /** 靴跡テクスチャ */
+  function createFootprintTexture(isLeft) {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 64, 128);
+    // 靴底の外形
+    ctx.fillStyle = 'rgba(45, 22, 14, 0.55)';
+    ctx.beginPath();
+    const ox = isLeft ? -2 : 2;
+    ctx.moveTo(32 + ox, 8);
+    ctx.bezierCurveTo(48 + ox, 12, 52 + ox, 40, 48 + ox, 70);
+    ctx.bezierCurveTo(50 + ox, 100, 42 + ox, 120, 32 + ox, 122);
+    ctx.bezierCurveTo(22 + ox, 120, 14 + ox, 100, 16 + ox, 70);
+    ctx.bezierCurveTo(12 + ox, 40, 16 + ox, 12, 32 + ox, 8);
+    ctx.fill();
+    // かかと
+    ctx.fillStyle = 'rgba(35, 16, 10, 0.4)';
+    ctx.beginPath();
+    ctx.ellipse(32 + ox, 100, 12, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // かすれ
+    ctx.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 6; i++) {
+      ctx.beginPath();
+      ctx.arc(10 + i * 9, 20 + (i % 3) * 30, 3 + (i % 2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    const tex = new THREE.CanvasTexture(c);
+    if (THREE.SRGBColorSpace !== undefined) tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  function makeDecalMat(map, opacity) {
+    return new THREE.MeshStandardMaterial({
+      map: map,
+      transparent: true,
+      opacity: opacity || 0.7,
+      depthWrite: false,
+      roughness: 0.95,
+      metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1
+    });
+  }
+
+  /** ストーリー段階4：異変レベル1＋日記＋金庫準備 */
   function spawnLoop4Events() {
     if (loop4Spawned) return;
     loop4Spawned = true;
+    storyStage = 4;
+    anomalyLevel = 1;
+    anomalyRoot = new THREE.Group();
+    anomalyRoot.name = 'anomalies';
+    scene.add(anomalyRoot);
 
-    const stainMat = new THREE.MeshStandardMaterial({
-      color: 0x4a1810,
-      roughness: 0.95,
-      metalness: 0.0,
-      transparent: true,
-      opacity: 0.55
-    });
-    // 床の染み
-    [[0.4, 12], [-0.5, 20], [0.2, 32], [-0.3, 7]].forEach(function (p) {
-      const s = new THREE.Mesh(new THREE.CircleGeometry(0.18 + Math.random() * 0.12, 10), stainMat.clone());
-      s.rotation.x = -Math.PI / 2;
-      s.position.set(p[0], 0.008, p[1]);
-      scene.add(s);
-    });
-    // 壁の染み
-    const wallStain = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.35, 0.55),
-      stainMat.clone()
-    );
-    wallStain.position.set(-CONFIG.corridorWidth / 2 + 0.02, 1.1, 15);
-    wallStain.rotation.y = Math.PI / 2;
-    scene.add(wallStain);
+    addAnomalySet(1);
 
-    // 足跡（奥へ）
-    const printMat = new THREE.MeshStandardMaterial({
-      color: 0x3a2018,
-      roughness: 0.98,
-      metalness: 0,
-      transparent: true,
-      opacity: 0.4
-    });
-    for (let i = 0; i < 14; i++) {
-      const side = (i % 2 === 0) ? -0.12 : 0.12;
-      const fp = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.22), printMat);
-      fp.rotation.x = -Math.PI / 2;
-      fp.rotation.z = (i % 2 === 0 ? -0.08 : 0.08);
-      fp.position.set(side, 0.009, 5 + i * 2.4);
-      scene.add(fp);
-    }
-
-    // 日記（棚付近）
+    // 日記をカウンター天板に（カウンター: x=1.35, z=17.5, 天板高さ≈0.92）
     const diaryGroup = new THREE.Group();
-    diaryGroup.position.set(-1.15, 0.95, 8.3);
+    diaryGroup.position.set(1.15, 0.935, 17.2);
+    diaryGroup.rotation.y = -0.25;
     const cover = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.03, 0.22),
+      new THREE.BoxGeometry(0.18, 0.025, 0.24),
       new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 })
     );
     diaryGroup.add(cover);
     const pages = new THREE.Mesh(
-      new THREE.BoxGeometry(0.14, 0.02, 0.2),
-      new THREE.MeshStandardMaterial({ color: 0xd4c8a8, roughness: 0.9 })
+      new THREE.BoxGeometry(0.16, 0.018, 0.22),
+      new THREE.MeshStandardMaterial({ color: 0xd4c8a8, roughness: 0.88 })
     );
-    pages.position.y = 0.02;
+    pages.position.y = 0.018;
     diaryGroup.add(pages);
+    // 開きかけの紙
+    const page2 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 0.008, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0xc8bc98, roughness: 0.9 })
+    );
+    page2.position.set(0.02, 0.03, 0);
+    page2.rotation.z = 0.08;
+    diaryGroup.add(page2);
     scene.add(diaryGroup);
-
-    const diaryText =
-      '1944年○月×日\n\n' +
-      '気がつ⬛︎たら私はそこにいた。ここはどこなんだろう？でも進むし⬛︎ない。' +
-      '何回も同じ場所を進むしかないのだ⬛︎⬛︎。ニゲロ。あの大き⬛︎⬛︎に襲⬛︎れる⬛︎。でないと⬛︎⬛︎⬛︎';
 
     registerInteractable({
       id: 'diary',
-      kind: 'inspect',
+      kind: 'diary',
       label: '調べる',
-      message: diaryText,
-      position: new THREE.Vector3(-1.15, 1.0, 8.3),
-      radius: 1.8,
-      hx: 0.3, hy: 0.25, hz: 0.3
+      message: '',
+      position: new THREE.Vector3(1.15, 1.05, 17.2),
+      radius: 1.9,
+      hx: 0.35, hy: 0.3, hz: 0.35
     });
 
-    // 金庫は中央絵画の裏に待機（非表示→絵画移動後に表示）
     createSafeBehindPainting();
+    safeState = 'painting';
+  }
+
+  /** 異変レベルに応じて汚れ・足跡を追加（重複なし） */
+  function addAnomalySet(level) {
+    if (!anomalyRoot) {
+      anomalyRoot = new THREE.Group();
+      scene.add(anomalyRoot);
+    }
+    if (level === 1) {
+      // 床の血痕（少数）
+      const floorSpots = [
+        [0.35, 11.5, 0.42, 1], [-0.4, 19.2, 0.35, 2], [0.15, 30.5, 0.5, 3]
+      ];
+      floorSpots.forEach(function (p) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(p[2], p[2] * 0.85),
+          makeDecalMat(createBloodStainTexture(p[3]), 0.72)
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.position.set(p[0], 0.006, p[1]);
+        anomalyRoot.add(m);
+      });
+      // 壁のしみ
+      const ws = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.4, 0.65),
+        makeDecalMat(createBloodStainTexture(5), 0.55)
+      );
+      ws.position.set(-CONFIG.corridorWidth / 2 + 0.015, 1.15, 14.5);
+      ws.rotation.y = Math.PI / 2;
+      anomalyRoot.add(ws);
+      // 足跡（奥へ・少数）
+      addFootprints(6, 5.5, 2.8, 10);
+    } else if (level === 2) {
+      [[0.5, 8.0, 0.3, 7], [-0.25, 24.0, 0.38, 8], [0.1, 35.0, 0.45, 9]].forEach(function (p) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(p[2], p[2] * 0.9),
+          makeDecalMat(createBloodStainTexture(p[3]), 0.68)
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.position.set(p[0], 0.006, p[1]);
+        anomalyRoot.add(m);
+      });
+      const ws2 = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.32, 0.5),
+        makeDecalMat(createBloodStainTexture(11), 0.5)
+      );
+      ws2.position.set(CONFIG.corridorWidth / 2 - 0.015, 0.95, 22);
+      ws2.rotation.y = -Math.PI / 2;
+      anomalyRoot.add(ws2);
+      addFootprints(5, 22, 2.6, 20);
+    } else if (level >= 3) {
+      [[-0.55, 13, 0.28, 12], [0.45, 27, 0.4, 13]].forEach(function (p) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(p[2], p[2]),
+          makeDecalMat(createBloodStainTexture(p[3]), 0.65)
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.position.set(p[0], 0.006, p[1]);
+        anomalyRoot.add(m);
+      });
+      addFootprints(4, 34, 2.5, 30);
+    }
+  }
+
+  function addFootprints(count, startZ, step, seedBase) {
+    const leftTex = createFootprintTexture(true);
+    const rightTex = createFootprintTexture(false);
+    for (let i = 0; i < count; i++) {
+      const isLeft = i % 2 === 0;
+      const side = isLeft ? -0.14 : 0.14;
+      const jitter = ((seedBase + i * 3) % 7) * 0.02 - 0.06;
+      const fp = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.12, 0.24),
+        makeDecalMat(isLeft ? leftTex : rightTex, 0.45 + (i % 3) * 0.08)
+      );
+      fp.rotation.x = -Math.PI / 2;
+      // 進行方向（+Z）へ
+      fp.rotation.z = (isLeft ? -0.1 : 0.1) + jitter * 0.5;
+      fp.position.set(side + jitter, 0.007, startZ + i * step + ((seedBase + i) % 5) * 0.08);
+      if (anomalyRoot) anomalyRoot.add(fp);
+    }
+  }
+
+  function showDiaryMessage() {
+    // 1944 だけ黄色（HTML）
+    const body =
+      '気がつ⬛︎たら私はそこにいた。ここはどこなんだろう？でも進むし⬛︎ない。' +
+      '何回も同じ場所を進むしかないのだ⬛︎⬛︎。ニゲロ。あの大き⬛︎⬛︎に襲⬛︎れる⬛︎。でないと⬛︎⬛︎⬛︎';
+    const html =
+      '<span style="color:#d4b84a;font-weight:600">1944</span>' +
+      '<span style="color:#e4dccf">年○月×日</span><br><br>' +
+      '<span style="color:#e4dccf">' + body + '</span>';
+    messageOpen = true;
+    if (messageText) {
+      messageText.innerHTML = html;
+    }
+    messagePanel.classList.remove('hidden');
+    if (actionBtn) actionBtn.classList.add('hidden');
+  }
+
+  /** ストーリー段階の更新（イベント完了時のみ） */
+  function updateStoryOnLoop() {
+    // 通常ループでの段階進行（謎解き中の通過では story を進めない）
+    if (puzzleStarted && !puzzleSolved) {
+      // 謎解き中は storyStage を維持
+      return;
+    }
+    if (storyStage === 1 && loopCount >= 2) {
+      storyStage = 2;
+    }
+    if (storyStage === 2 && loopCount >= 3) {
+      storyStage = 3;
+    }
+    // ステージ4は暗号成功後の次のループ到達時
+    if (puzzleSolved && storyStage === 3) {
+      storyStage = 4;
+      if (!loop4Spawned) spawnLoop4Events();
+    }
+    // ステージ5以降：異変の増加（鍵取得後など）
+    if (storyStage >= 4 && hasKey && anomalyLevel < 2) {
+      anomalyLevel = 2;
+      storyStage = 5;
+      addAnomalySet(2);
+    } else if (storyStage >= 5 && anomalyLevel < 3 && loopCount >= 6) {
+      anomalyLevel = 3;
+      storyStage = 6;
+      addAnomalySet(3);
+    }
   }
 
   function createSafeBehindPainting() {
@@ -1423,13 +1615,16 @@
   }
 
   function revealSafe() {
-    if (paintingMoved) return;
-    paintingMoved = true;
+    if (safeState !== 'painting') return;
+    safeState = 'code';
     if (paintingCenterGroup) {
-      // 絵画を少し横へずらす
       paintingCenterGroup.position.z += 0.55;
       paintingCenterGroup.position.x += 0.05;
       paintingCenterGroup.rotation.y += 0.15;
+    }
+    // 絵画の調査を無効化
+    for (let i = 0; i < interactables.length; i++) {
+      if (interactables[i].id === 'painting_c') interactables[i].radius = 0;
     }
     if (safeObject) {
       safeObject.visible = true;
@@ -1446,10 +1641,11 @@
   }
 
   function openPinUI() {
-    if (safeOpened) {
-      showMessage('金庫は開いている。');
+    if (safeState === 'done' || safeState === 'key') {
+      showMessage(hasKey ? '鍵はすでに手に入れた。' : '金庫は開いている。中に鍵がある。');
       return;
     }
+    if (safeState !== 'code' && safeState !== 'opening') return;
     pinOpen = true;
     pinInput = '';
     const panel = document.getElementById('pin-panel');
@@ -1467,13 +1663,16 @@
   }
 
   function submitPin() {
+    if (safeState !== 'code') return;
     if (pinInput === '1944') {
       closePinUI();
+      safeState = 'opening';
       safeOpened = true;
       if (keyObject) keyObject.visible = true;
-      if (safeObject) {
-        // 扉が少し開いた表現
-        safeObject.rotation.y += 0.2;
+      if (safeObject) safeObject.rotation.y += 0.25;
+      // 金庫の再解読を防ぐ
+      for (let i = 0; i < interactables.length; i++) {
+        if (interactables[i].id === 'safe') interactables[i].radius = 0;
       }
       registerInteractable({
         id: 'key',
@@ -1484,7 +1683,8 @@
         radius: 1.6,
         hx: 0.25, hy: 0.25, hz: 0.25
       });
-      showMessage('金庫が開いた。中に鍵がある。');
+      safeState = 'key';
+      showMessage('金庫が開いた。');
     } else {
       pinInput = '';
       const disp = document.getElementById('pin-display');
@@ -2206,21 +2406,23 @@
         console.log('[同じ廊下] 周回:', loopCount, 'dir:', loopPassDirection);
 
         // 2周目メッセージ
-        if (loopCount === 2) {
+        if (loopCount === 2 && storyStage <= 2) {
           queueMessages(['……あれ？', '後ろのドアが閉まってる……。']);
         }
-        // 3周目：後方ドア解放＋環境ヒント＋花瓶落下待機
-        if (loopCount >= 3) {
+        // ストーリー段階3：後方ドア解放＋環境ヒント＋花瓶
+        // 謎解き中のドア通過では stage を上げない（異変の早期出現を防ぐ）
+        if (!(puzzleStarted && !puzzleSolved)) {
+          if (loopCount >= 3 && storyStage < 3) storyStage = 3;
+        }
+        if (storyStage >= 3 || (loopCount >= 3 && !puzzleStarted)) {
           enableBackDoorForPuzzle();
           if (!window._envHintsAdded) {
             window._envHintsAdded = true;
             addPuzzleEnvHints();
           }
         }
-        // 4周目：汚れ・足跡・日記・金庫準備
-        if (loopCount >= 4 && !loop4Spawned) {
-          spawnLoop4Events();
-        }
+        // ストーリー段階の更新（異変は loopCount ではなく story に連動）
+        updateStoryOnLoop();
       }, 400);
     }, 500);
   }
@@ -2289,6 +2491,8 @@
     if (puzzleInput.length === PUZZLE_ANSWER.length) {
       puzzleSolved = true;
       puzzleInput = [];
+      // 次のループ到達で storyStage 4（異変）へ
+      if (storyStage < 3) storyStage = 3;
       queueMessages(['……何かが変わったようだ。']);
     }
   }
@@ -2334,9 +2538,10 @@
     backDoorState.pivot.rotation.y = backDoorState.angle;
   }
 
-  /** 3周目：花瓶落下 */
+  /** ストーリー段階3：花瓶落下（loopCount ではなく story / 初回フラグで管理） */
   function updateVaseEvent(dt) {
-    if (loopCount !== 3) return;
+    // 段階3以降、まだ落ちていなければ発生（謎解き通過で loopCount が増えても1回だけ）
+    if (storyStage < 3 && loopCount < 3) return;
     if (!vaseEventTriggered && gameState === 'playing' && !loopInProgress) {
       if (player.position.z > 6.5) {
         startVaseFall();
@@ -2510,17 +2715,25 @@
       return;
     }
     if (currentTarget.kind === 'safe') {
-      openPinUI();
+      if (safeState === 'code') openPinUI();
       return;
     }
     if (currentTarget.kind === 'key') {
-      if (!hasKey) {
+      if (safeState === 'key' && !hasKey) {
         hasKey = true;
+        safeState = 'done';
         showMessage('古い鍵を手に入れた。');
-        // 鍵メッシュを消す
         if (keyObject) keyObject.visible = false;
         currentTarget.radius = 0;
+        // 鍵取得後、次のループで異変増加
+        if (anomalyLevel < 2) {
+          // 現時点ではまだ増やさない。次の updateStoryOnLoop で増やす
+        }
       }
+      return;
+    }
+    if (currentTarget.kind === 'diary') {
+      showDiaryMessage();
       return;
     }
     if (currentTarget.kind === 'inspect' || currentTarget.kind === 'paper') {
@@ -2530,23 +2743,26 @@
 
   function doInspect(item) {
     if (messageOpen || pinOpen) return;
+    // 金庫シーケンス中は他オブジェクトを調べない
+    if (safeState === 'code' || safeState === 'opening' || safeState === 'key') {
+      if (item.id !== 'painting_c') return;
+    }
     const firstTime = !inspectedSet[item.id];
     inspectedSet[item.id] = true;
     item.inspected = true;
 
-    // 紙は専用テキスト（何度調べても同じ暗号）
     if (item.id === 'paper' || item.kind === 'paper') {
       showMessage('紙には、四つの矢印が書かれている。\n\n↑　↓　↓　↑');
       return;
     }
 
-    // 4周目：中央の絵画を調べると裏の金庫が現れる
-    if (item.id === 'painting_c' && loopCount >= 4 && !paintingMoved) {
+    // ストーリー段階4以降：中央絵画 → 金庫出現
+    if (item.id === 'painting_c' && storyStage >= 4 && safeState === 'painting') {
       revealSafe();
       showMessage('絵の裏に、何かがある……。');
       return;
     }
-    if (item.id === 'painting_c' && paintingMoved) {
+    if (item.id === 'painting_c' && safeState !== 'painting') {
       showMessage('裏に金庫が取り付けられている。');
       return;
     }
@@ -2617,6 +2833,8 @@
       if (actionBtn) actionBtn.classList.add('hidden');
       return;
     }
+    // 金庫シーケンス中は対象を制限
+    // safeState code: safe のみ / key: key のみ
 
     const camPos = camera.position;
     // 距離内の候補
@@ -2626,6 +2844,10 @@
       if (it.radius <= 0) continue;
       if (it.id === 'door_front' && frontDoorState && (frontDoorState.open || frontDoorState.animating)) continue;
       if (it.id === 'door_back' && backDoorState && (backDoorState.open || backDoorState.animating)) continue;
+      // 金庫シーケンス中は操作対象を1つに限定
+      if (safeState === 'code' && it.kind !== 'safe') continue;
+      if (safeState === 'key' && it.kind !== 'key') continue;
+      if (safeState === 'opening') continue;
       const dist = camPos.distanceTo(it.position);
       if (dist <= it.radius) candidates.push({ it: it, dist: dist });
     }
