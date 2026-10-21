@@ -31,18 +31,18 @@
     // 懐中電灯（SpotLight）
     // intensity は MeshStandardMaterial を照らすのに十分な値
     // distance 0 = 減衰距離制限なし（プレイ範囲では実質無限）
-    flashlightIntensity: 9,
-    flashlightDistance: 11,
-    flashlightAngle: Math.PI / 6.5,
+    flashlightIntensity: 8,
+    flashlightDistance: 9.5,
+    flashlightAngle: Math.PI / 7.2,
     flashlightPenumbra: 0.5,
     flashlightDecay: 1.6,
 
     // 通常時の明るさ（設定スライダーで上書き）— さらに暗く
-    defaultBrightness: 16,
-    ambientMin: 0.005,
-    ambientMax: 0.18,
-    hemiMin: 0.004,
-    hemiMax: 0.1,
+    defaultBrightness: 12,
+    ambientMin: 0.004,
+    ambientMax: 0.16,
+    hemiMin: 0.003,
+    hemiMax: 0.09,
 
     // 感度スライダー初期値（50＝従来どおり）
     defaultLookSens: 50,
@@ -1780,7 +1780,7 @@
     if (messageNextMode === 'room4_desk') {
       messageNextMode = null;
       closeMessage();
-      startRoom4FaceEvent();
+      beginEscapeSequence();
       return;
     }
     messageNextMode = null;
@@ -1959,7 +1959,7 @@
     entryGlow.position.set(-hd + 1.0, 1.5, 0);
     room4Group.add(entryGlow);
 
-    const deskLocalX = -hd + 4.5;
+    const deskLocalX = 0; // 部屋中央
     const desk = new THREE.Mesh(
       new THREE.BoxGeometry(1.4, 0.08, 0.7),
       new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 0.6 })
@@ -1981,13 +1981,14 @@
 
     room4Origin.set(roomX, 0, roomZ);
 
-    const faceTex = new THREE.TextureLoader().load('face.jpg');
+    const faceTex = new THREE.TextureLoader().load('face.png');
     if (THREE.SRGBColorSpace !== undefined) faceTex.colorSpace = THREE.SRGBColorSpace;
     const faceMat = new THREE.MeshBasicMaterial({
       map: faceTex,
       transparent: true,
+      alphaTest: 0.15,
       side: THREE.DoubleSide,
-      depthWrite: true
+      depthWrite: false
     });
     const faceMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.75), faceMat);
     // 壁の奥（+X外側）に完全に隠す
@@ -2065,6 +2066,123 @@
     room4DoorState.pivot.rotation.y = room4DoorState.angle;
   }
 
+
+  let escapeMapActive = false;
+  let escapeObstacles = [];
+
+  /** 机の文章読了後：逃走マップ準備 → 顔出現 → 追跡 */
+  function beginEscapeSequence() {
+    if (escapeMapActive || facePhase !== 'idle') return;
+    escapeMapActive = true;
+    gameState = 'intro';
+    joystick.active = false;
+    lookTouch.active = false;
+
+    // 暗転
+    const fade = document.getElementById('fade-overlay');
+    if (fade) {
+      fade.classList.remove('hidden');
+      fade.classList.add('active');
+    }
+
+    setTimeout(function () {
+      setupEscapeMap();
+      if (fade) {
+        fade.classList.remove('active');
+        setTimeout(function () { fade.classList.add('hidden'); }, 400);
+      }
+      // 顔出現演出開始
+      startRoom4FaceEvent();
+    }, 700);
+  }
+
+  function setupEscapeMap() {
+    // プレイヤーを廊下入口寄りへ（出口まで長い距離）
+    player.position.set(0, CONFIG.eyeHeight, 4.0);
+    player.yaw = 0; // -Z 方向を向く... yaw=0 は -Z
+    // 実際は奥ドアが +Z 側。奥へ逃げるなら yaw = Math.PI（+Z を向かない）
+    // forward = (-sin(yaw),0,-cos(yaw)); yaw=π → (0,0,1) = +Z へ前進
+    player.yaw = Math.PI;
+    player.pitch = 0;
+    camera.position.copy(player.position);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = 0;
+
+    // 後ろドア（入口）を逃走中に使えるよう開放可能に
+    enableBackDoorForEscape();
+
+    // 障害物を廊下に配置（左右に避けて進む）
+    spawnEscapeObstacles();
+
+    // 出口光は奥側
+    spawnEscapeExit();
+
+    // 顔の出現完了位置を廊下奥寄りに変更（プレイヤーから遠い）
+    if (room4Face) {
+      faceStartPos.set(0, 1.55, 2.0); // 入口付近の壁側から
+      window._faceEmergeEnd = new THREE.Vector3(0, 1.55, 6.0);
+      room4Face.position.copy(faceStartPos);
+      room4Face.visible = false;
+    }
+  }
+
+  function enableBackDoorForEscape() {
+    for (let i = 0; i < interactables.length; i++) {
+      if (interactables[i].id === 'door_back') {
+        interactables[i].kind = 'door';
+        interactables[i].message = '';
+        interactables[i].radius = 1.5;
+      }
+    }
+    // 入口ブロック解除（開いた後通れるように）
+    if (entranceBlockCollider) entranceBlockCollider.active = false;
+  }
+
+  function spawnEscapeObstacles() {
+    // 既存をクリア
+    for (let i = 0; i < escapeObstacles.length; i++) {
+      scene.remove(escapeObstacles[i]);
+    }
+    escapeObstacles = [];
+
+    const wood = makeMat(0x5a4a38, 0.85, 0.05);
+    const dark = makeMat(0x3a3228, 0.9, 0.02);
+    // 倒れた机・棚・散乱物（左右交互に配置して進路を曲げる）
+    const specs = [
+      // x, z, sx, sy, sz, rotY
+      [0.85, 10, 1.6, 0.12, 0.7, 0.4],
+      [-0.9, 14, 0.5, 1.1, 0.4, 0.2],
+      [0.7, 18, 1.4, 0.7, 0.5, -0.5],
+      [-0.75, 22, 1.2, 0.15, 0.8, 0.9],
+      [0.95, 26, 0.45, 1.3, 0.45, 0.1],
+      [-0.6, 30, 1.5, 0.5, 0.6, -0.3],
+      [0.8, 34, 1.1, 0.2, 0.9, 0.6],
+      [-0.85, 37, 0.55, 1.0, 0.5, 0.15]
+    ];
+    for (let i = 0; i < specs.length; i++) {
+      const s = specs[i];
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(s[2], s[3], s[4]),
+        i % 2 === 0 ? wood : dark
+      );
+      mesh.position.set(s[0], s[3] / 2, s[1]);
+      mesh.rotation.y = s[5];
+      scene.add(mesh);
+      escapeObstacles.push(mesh);
+      // 衝突（見た目に合わせる）
+      addCollider(
+        s[0] - s[2] / 2 - 0.05,
+        0,
+        s[1] - s[4] / 2 - 0.05,
+        s[2] + 0.1,
+        s[3] + 0.1,
+        s[4] + 0.1
+      );
+    }
+  }
+
+
   function startRoom4FaceEvent() {
     if (facePhase !== 'idle' || !room4Face) return;
     facePhase = 'emerge';
@@ -2124,24 +2242,42 @@
 
     if (facePhase === 'emerge') {
       faceEmergeT += dt;
-      const duration = 2.4;
+      const duration = 3.2;
       const t = Math.min(1, faceEmergeT / duration);
       const e = smootherstep(t);
       const endPos = window._faceEmergeEnd || new THREE.Vector3(
-        faceStartPos.x - 4, faceStartPos.y, faceStartPos.z
+        faceStartPos.x, faceStartPos.y, faceStartPos.z + 4
       );
-      // 壁の奥 → 手前へ実際に移動（拡大だけにしない）
       room4Face.position.x = faceStartPos.x + (endPos.x - faceStartPos.x) * e;
       room4Face.position.y = faceStartPos.y;
       room4Face.position.z = faceStartPos.z + (endPos.z - faceStartPos.z) * e;
       faceLookAtPlayer();
 
-      // カメラを奥壁方向へ寄せる
-      const lookDx = endPos.x - player.position.x;
-      const lookDz = endPos.z - player.position.z;
+      // 中盤でカメラを顔に大きく寄せ、終盤で操作視点へ戻す
+      const lookDx = room4Face.position.x - player.position.x;
+      const lookDz = room4Face.position.z - player.position.z;
       player.yaw = Math.atan2(-lookDx, -lookDz);
-      player.pitch = -0.06;
-      camera.position.copy(player.position);
+      // t=0.35〜0.7 で迫力の寄り
+      let camDist = 0;
+      if (t < 0.35) {
+        camDist = 0;
+        player.pitch = -0.05;
+      } else if (t < 0.72) {
+        const u = (t - 0.35) / 0.37;
+        camDist = smootherstep(u) * 1.35; // 前進して顔を大きく
+        player.pitch = -0.05 + u * 0.08;
+      } else {
+        const u = (t - 0.72) / 0.28;
+        camDist = 1.35 * (1 - smootherstep(u));
+        player.pitch = 0.03 * (1 - u);
+      }
+      const fwdX = -Math.sin(player.yaw);
+      const fwdZ = -Math.cos(player.yaw);
+      camera.position.set(
+        player.position.x + fwdX * camDist,
+        player.position.y,
+        player.position.z + fwdZ * camDist
+      );
       camera.rotation.order = 'YXZ';
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
@@ -2151,8 +2287,7 @@
         facePhase = 'chase';
         room4Chase = true;
         gameState = 'playing';
-        spawnEscapeExit();
-        // 世界時間を止めない短い通知
+        if (!escapeExitMesh) spawnEscapeExit();
         showChaseHint('逃げろ。');
       }
       return;
@@ -2193,7 +2328,11 @@
     }
     faceEmergeT += dt; // チェイス中も経過を積算（猶予用）
 
+    // 奥の光、または開いた後ろドアから脱出
     if (escapeExitMesh && player.position.z > CONFIG.corridorLength - 0.5 && Math.abs(player.position.x) < 0.55) {
+      onEscapeSuccess();
+    }
+    if (room4Chase && backDoorState && backDoorState.open && player.position.z < 0.6 && Math.abs(player.position.x) < 0.7) {
       onEscapeSuccess();
     }
   }
@@ -2344,6 +2483,11 @@
       room4Face.position.copy(faceStartPos);
       room4Face.scale.set(1, 1, 1);
     }
+    escapeMapActive = false;
+    for (let i = 0; i < escapeObstacles.length; i++) {
+      scene.remove(escapeObstacles[i]);
+    }
+    escapeObstacles = [];
     if (escapeExitMesh) {
       scene.remove(escapeExitMesh);
       escapeExitMesh = null;
@@ -3248,7 +3392,8 @@
 
   function tryOpenBackDoor() {
     if (!backDoorState || backDoorState.open || backDoorState.animating) return;
-    if (!puzzleStarted) return;
+    // 通常は謎解き開始後のみ。逃走中は常に開放可
+    if (!puzzleStarted && !room4Chase) return;
     backDoorState.animating = true;
     if (actionBtn) actionBtn.classList.add('hidden');
   }
@@ -3672,6 +3817,10 @@
     inspectedSet[item.id] = true;
     item.inspected = true;
 
+        if (item.id && item.id.indexOf('painting') === 0) {
+      showMessage('特に何もない。');
+      return;
+    }
     if (item.id === 'paper' || item.kind === 'paper') {
       showMessage('紙には、四つの矢印が書かれている。\n\n↑　↓　↓　↑');
       return;
@@ -3896,7 +4045,7 @@
         camera.rotation.z = 0;
       }
     }
-    if (!messageOpen && !pinOpen && !room4Chase) updateInteraction();
+    if (!messageOpen && !pinOpen && facePhase !== 'emerge' && facePhase !== 'caught') updateInteraction();
     else {
       currentTarget = null;
       if (actionBtn) actionBtn.classList.add('hidden');
