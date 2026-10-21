@@ -31,19 +31,19 @@
     // 懐中電灯（SpotLight）
     // intensity は MeshStandardMaterial を照らすのに十分な値
     // distance 0 = 減衰距離制限なし（プレイ範囲では実質無限）
-    flashlightIntensity: 14,
+    flashlightIntensity: 16,
     flashlightDistance: 0,
-    flashlightAngle: Math.PI / 5.0,
-    flashlightPenumbra: 0.45,
-    flashlightDecay: 1.0,
+    flashlightAngle: Math.PI / 5.2,
+    flashlightPenumbra: 0.4,
+    flashlightDecay: 1.15,
 
-    // 通常時の明るさ（設定スライダーで上書き）
-    // スライダー 0–100 → ambient 0.06–0.72 / hemi 0.04–0.45
-    defaultBrightness: 65,
-    ambientMin: 0.06,
-    ambientMax: 0.72,
-    hemiMin: 0.04,
-    hemiMax: 0.45,
+    // 通常時の明るさ（設定スライダーで上書き）— 全体を暗めに
+    // スライダー 0–100 → ambient / hemi
+    defaultBrightness: 38,
+    ambientMin: 0.02,
+    ambientMax: 0.42,
+    hemiMin: 0.015,
+    hemiMax: 0.28,
 
     // 感度スライダー初期値（50＝従来どおり）
     defaultLookSens: 50,
@@ -149,13 +149,13 @@
   let pinInput = '';
   let paintingCenterGroup = null;
   let anomalyRoot = null;
+  let sharedWallMat = null; // ドア周辺と共通の壁マテリアル
   // 花瓶演出
   let vaseCinematic = false;
   let vaseCinePhase = 0;
   let vaseCineTimer = 0;
   let vaseLookTarget = new THREE.Vector3();
-  let savedYaw = 0;
-  let savedPitch = 0;
+  let vaseDebris = []; // { mesh, vx, vy, vz, rx, ry, rz, life }
   let messageNextMode = null;
 
   const canvas = document.getElementById('game-canvas');
@@ -869,10 +869,11 @@
     wallTex.repeat.set(L / 3.5, H / 2.8);
     const wallMat = new THREE.MeshStandardMaterial({
       map: wallTex,
-      roughness: 0.88,
+      roughness: 0.9,
       metalness: 0.02,
-      color: 0xc8bca8
+      color: 0xb8ac98
     });
+    sharedWallMat = wallMat;
 
     const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(L, H), wallMat);
     leftWall.rotation.y = Math.PI / 2;
@@ -924,32 +925,31 @@
       scene.add(endRight);
     }
 
-    // ドア開口の奥は完全な黒（MeshBasicMaterial・照明の影響なし）
+    // ドア開口の奥は完全な黒（開口高さのみ・上部は壁）
     const extLen = 4;
     const voidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    // 開口を覆う黒壁（枠のすぐ奥）
+    // doorOpeningH は入口側で定義済みを再利用
     const voidPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(doorGap + 0.15, H + 0.1),
+      new THREE.PlaneGeometry(doorGap + 0.08, doorOpeningH),
       voidMat
     );
-    voidPlane.position.set(0, H / 2, L + 0.04);
+    voidPlane.position.set(0, doorOpeningH / 2, L + 0.04);
     scene.add(voidPlane);
-    // 奥行きのある黒空間（上下左右も黒で漏れ防止）
     const voidDepth = 3.5;
     const voidBox = new THREE.Mesh(
-      new THREE.BoxGeometry(doorGap + 0.3, H + 0.2, voidDepth),
+      new THREE.BoxGeometry(doorGap + 0.15, doorOpeningH, voidDepth),
       voidMat
     );
-    voidBox.position.set(0, H / 2, L + 0.04 + voidDepth / 2);
+    voidBox.position.set(0, doorOpeningH / 2, L + 0.04 + voidDepth / 2);
     scene.add(voidBox);
-    // 通過用の床コリジョンのみ（見た目は黒）
-    const voidFloorCol = new THREE.Mesh(
-      new THREE.PlaneGeometry(doorGap, voidDepth),
-      voidMat
+    // 開口上部は壁材で塞ぐ（黒が天井まで見えないように）
+    const frontHeaderH = Math.max(0.2, H - doorOpeningH);
+    const frontHeader = new THREE.Mesh(
+      new THREE.PlaneGeometry(doorGap + 0.08, frontHeaderH),
+      wallMat.clone()
     );
-    voidFloorCol.rotation.x = -Math.PI / 2;
-    voidFloorCol.position.set(0, 0.001, L + voidDepth / 2);
-    scene.add(voidFloorCol);
+    frontHeader.position.set(0, doorOpeningH + frontHeaderH / 2, L + 0.01);
+    scene.add(frontHeader);
 
     // 巾木（立体）
     const baseWood = createFurnitureWoodTexture(64, -10);
@@ -1846,25 +1846,30 @@
 
     const col = addCollider(-0.65, 0, z - 0.15, 1.3, 2.35, 0.35);
 
-    // ドア枠まわりの壁：枠と面一に埋め込み、隙間・段差を出さない
+    // ドア枠まわりの壁：廊下と同じマテリアルで模様を統一
     {
-      const wallFillMat = new THREE.MeshStandardMaterial({
-        map: createWallTexture(128),
-        roughness: 0.9,
-        metalness: 0.02,
-        color: 0xc4b8a4
-      });
-      const wallZ = 0.01;
-      const wallD = 0.14;
+      const wallFillMat = sharedWallMat
+        ? sharedWallMat.clone()
+        : new THREE.MeshStandardMaterial({
+            map: createWallTexture(256),
+            roughness: 0.9,
+            metalness: 0.02,
+            color: 0xb8ac98
+          });
+      if (wallFillMat.map) {
+        wallFillMat.map = wallFillMat.map.clone();
+        wallFillMat.map.repeat.set(1.2, 1.0);
+        wallFillMat.map.needsUpdate = true;
+      }
+      const wallZ = 0.0;
+      const wallD = 0.12;
       const aboveH = Math.max(0.2, CONFIG.corridorHeight - (doorH + frameThick));
-      // 上部：枠の直上から天井まで、廊下全幅
       const above = new THREE.Mesh(
         new THREE.BoxGeometry(CONFIG.corridorWidth - 0.02, aboveH, wallD),
         wallFillMat
       );
       above.position.set(0, doorH + frameThick + aboveH / 2, wallZ);
       group.add(above);
-      // 左右：枠外側から壁端まで、床から枠上端まで
       const fillW = (CONFIG.corridorWidth - doorW) / 2 - frameThick - 0.01;
       if (fillW > 0.04) {
         const fillH = doorH + frameThick;
@@ -1875,14 +1880,6 @@
         rightFill.position.set(doorW / 2 + frameThick + fillW / 2, fillH / 2, wallZ);
         group.add(rightFill);
       }
-      // 枠と壁の接合を隠す薄いカバー
-      const seamMat = wallFillMat.clone();
-      const topSeam = new THREE.Mesh(
-        new THREE.BoxGeometry(doorW + frameThick * 2 + 0.04, 0.04, wallD + 0.02),
-        seamMat
-      );
-      topSeam.position.set(0, doorH + frameThick + 0.01, wallZ);
-      group.add(topSeam);
     }
 
     if (id === 'front') {
@@ -1947,7 +1944,7 @@
     zone.addEventListener('touchcancel', onTouchEnd, { passive: false });
 
     window.addEventListener('keydown', function (e) {
-      if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
+      if (settingsOpen || vaseCinematic || messageOpen || pinOpen || gameState !== 'playing') return;
       switch (e.code) {
         case 'KeyW': case 'ArrowUp': keys.forward = true; break;
         case 'KeyS': case 'ArrowDown': keys.back = true; break;
@@ -1965,14 +1962,14 @@
     });
 
     canvas.addEventListener('mousedown', function (e) {
-      if (settingsOpen || vaseCinematic || gameState !== 'playing' || e.button !== 0) return;
+      if (settingsOpen || vaseCinematic || messageOpen || pinOpen || gameState !== 'playing' || e.button !== 0) return;
       mouseLook.active = true;
       mouseLook.lastX = e.clientX;
       mouseLook.lastY = e.clientY;
     });
     window.addEventListener('mouseup', function () { mouseLook.active = false; });
     window.addEventListener('mousemove', function (e) {
-      if (!mouseLook.active || settingsOpen || vaseCinematic || gameState !== 'playing') return;
+      if (!mouseLook.active || settingsOpen || vaseCinematic || messageOpen || pinOpen || gameState !== 'playing') return;
       const dx = e.clientX - mouseLook.lastX;
       const dy = e.clientY - mouseLook.lastY;
       mouseLook.lastX = e.clientX;
@@ -1983,7 +1980,7 @@
   }
 
   function onTouchStart(e) {
-    if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
+    if (settingsOpen || vaseCinematic || messageOpen || pinOpen || gameState !== 'playing') return;
     e.preventDefault();
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
@@ -2003,7 +2000,7 @@
   }
 
   function onTouchMove(e) {
-    if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
+    if (settingsOpen || vaseCinematic || messageOpen || pinOpen || gameState !== 'playing') return;
     e.preventDefault();
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
@@ -2514,13 +2511,25 @@
 
   function checkLoopTrigger() {
     if (loopInProgress || gameState !== 'playing') return;
-    // 前方ドア通過（開口部を実際に超えたとき）
-    if (frontDoorState && frontDoorState.open && player.position.z > CONFIG.corridorLength + 0.3) {
+    if (messageOpen || pinOpen || vaseCinematic) return;
+    // 完全に開いた後、開口中央を実際に通過したときのみ
+    if (
+      frontDoorState &&
+      frontDoorState.open &&
+      !frontDoorState.animating &&
+      player.position.z > CONFIG.corridorLength + 0.55 &&
+      Math.abs(player.position.x) < 0.52
+    ) {
       triggerLoop('up');
       return;
     }
-    // 後方ドア通過（開口部を実際に超えたとき）
-    if (backDoorState && backDoorState.open && player.position.z < 0.05) {
+    if (
+      backDoorState &&
+      backDoorState.open &&
+      !backDoorState.animating &&
+      player.position.z < -0.05 &&
+      Math.abs(player.position.x) < 0.52
+    ) {
       triggerLoop('down');
     }
   }
@@ -2597,47 +2606,12 @@
   /** ストーリー段階3：花瓶落下＋カメラ演出 */
   function updateVaseEvent(dt) {
     if (storyStage < 3 && loopCount < 3) return;
-
-    // 演出中：操作ロック・カメラ追従
     if (vaseCinematic) {
       updateVaseCinematic(dt);
       return;
     }
-
     if (!vaseEventTriggered && gameState === 'playing' && !loopInProgress) {
-      if (player.position.z > 6.5) {
-        startVaseFall();
-      }
-    }
-    if (vaseFallState && vaseFallState.active && vaseMesh) {
-      vaseFallState.vy -= 9.5 * dt;
-      vaseMesh.position.y += vaseFallState.vy * dt;
-      const wp = new THREE.Vector3();
-      vaseMesh.getWorldPosition(wp);
-      if (wp.y < 0.08) {
-        const worldPos = wp.clone();
-        worldPos.y = 0.06;
-        scene.attach(vaseMesh);
-        vaseMesh.position.copy(worldPos);
-        vaseMesh.rotation.set(1.2, 0.3, 0.5);
-        vaseFallState.active = false;
-        vaseFallState.done = true;
-        for (let i = 0; i < interactables.length; i++) {
-          if (interactables[i].id === 'vase') {
-            interactables[i].position.set(worldPos.x, 0.35, worldPos.z);
-            interactables[i].message = '花瓶が割れている。中から紙切れが落ちたようだ。';
-            if (interactables[i].hitMesh) {
-              interactables[i].hitMesh.position.set(worldPos.x, 0.2, worldPos.z);
-            }
-          }
-        }
-        if (!paperSpawned) spawnPaper(worldPos);
-        // 着地後は注視フェーズへ
-        if (vaseCinePhase === 1) {
-          vaseCinePhase = 2;
-          vaseCineTimer = 1.5;
-        }
-      }
+      if (player.position.z > 6.5) startVaseFall();
     }
   }
 
@@ -2647,32 +2621,113 @@
     vaseCinematic = true;
     vaseCinePhase = 0;
     vaseCineTimer = 0;
-    savedYaw = player.yaw;
-    savedPitch = player.pitch;
-    // 操作ロック
     joystick.active = false;
     joystick.dx = 0;
     joystick.dy = 0;
     lookTouch.active = false;
     dashHeld = false;
-    // 花瓶のワールド位置を目標に
     vaseMesh.getWorldPosition(vaseLookTarget);
   }
 
+  function spawnVaseDebris(worldPos) {
+    vaseDebris = [];
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x8a7a60, roughness: 0.4, metalness: 0.1
+    });
+    // 破片
+    for (let i = 0; i < 7; i++) {
+      const size = 0.03 + (i % 3) * 0.015;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(size, size * 0.6, size * 0.8),
+        mat.clone()
+      );
+      mesh.position.copy(worldPos);
+      mesh.position.y = 0.08;
+      scene.add(mesh);
+      const ang = (i / 7) * Math.PI * 2 + 0.3;
+      vaseDebris.push({
+        mesh: mesh,
+        vx: Math.cos(ang) * (0.8 + (i % 3) * 0.35),
+        vy: 1.2 + (i % 4) * 0.4,
+        vz: Math.sin(ang) * (0.8 + (i % 3) * 0.35) + 0.4,
+        rx: (Math.random() - 0.5) * 8,
+        ry: (Math.random() - 0.5) * 8,
+        rz: (Math.random() - 0.5) * 8,
+        life: 2.5
+      });
+    }
+    // 花（茎＋花びら風）を別オブジェクトとして飛ばす
+    const flower = new THREE.Group();
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.004, 0.005, 0.18, 5),
+      new THREE.MeshStandardMaterial({ color: 0x3a5a38, roughness: 0.7 })
+    );
+    flower.add(stem);
+    const petal = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 6, 6),
+      new THREE.MeshStandardMaterial({ color: 0xc4a0a8, roughness: 0.55 })
+    );
+    petal.position.y = 0.1;
+    flower.add(petal);
+    flower.position.copy(worldPos);
+    flower.position.y = 0.15;
+    scene.add(flower);
+    vaseDebris.push({
+      mesh: flower,
+      vx: 0.5,
+      vy: 1.8,
+      vz: 1.1,
+      rx: 4,
+      ry: 2,
+      rz: 3,
+      life: 3.0
+    });
+  }
+
+  function updateVaseDebris(dt) {
+    if (!vaseDebris.length) return;
+    for (let i = vaseDebris.length - 1; i >= 0; i--) {
+      const d = vaseDebris[i];
+      d.vy -= 9.5 * dt;
+      d.mesh.position.x += d.vx * dt;
+      d.mesh.position.y += d.vy * dt;
+      d.mesh.position.z += d.vz * dt;
+      d.mesh.rotation.x += d.rx * dt;
+      d.mesh.rotation.y += d.ry * dt;
+      d.mesh.rotation.z += d.rz * dt;
+      if (d.mesh.position.y < 0.03) {
+        d.mesh.position.y = 0.03;
+        d.vy *= -0.15;
+        d.vx *= 0.55;
+        d.vz *= 0.55;
+        d.rx *= 0.5;
+        d.ry *= 0.5;
+        d.rz *= 0.5;
+      }
+      // 壁内に埋まらないよう簡易クランプ
+      const hw = CONFIG.corridorWidth / 2 - 0.15;
+      d.mesh.position.x = Math.max(-hw, Math.min(hw, d.mesh.position.x));
+      d.life -= dt;
+      if (d.life <= 0 && Math.abs(d.vy) < 0.15) {
+        d.vx = 0;
+        d.vz = 0;
+        d.rx = 0;
+        d.ry = 0;
+        d.rz = 0;
+      }
+    }
+  }
+
   function updateVaseCinematic(dt) {
-    // カメラ位置はプレイヤー位置を維持（暗転なし）
     camera.position.copy(player.position);
     camera.rotation.order = 'YXZ';
 
     if (vaseCinePhase === 0) {
-      // 花瓶方向へ滑らかに向く
       const dx = vaseLookTarget.x - player.position.x;
       const dy = vaseLookTarget.y - player.position.y;
       const dz = vaseLookTarget.z - player.position.z;
       const targetYaw = Math.atan2(-dx, -dz);
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       const targetPitch = Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)) * 0.6;
-      // 最短角度補間
       let dyaw = targetYaw - player.yaw;
       while (dyaw > Math.PI) dyaw -= Math.PI * 2;
       while (dyaw < -Math.PI) dyaw += Math.PI * 2;
@@ -2683,13 +2738,22 @@
       camera.rotation.z = 0;
       if (Math.abs(dyaw) < 0.08 && Math.abs(targetPitch - player.pitch) < 0.08) {
         vaseCinePhase = 1;
-        vaseFallState = { active: true, vy: 0.35, done: false };
+        // 外側へ倒れる初速（棚は左壁・ローカル+Zが廊下側）
+        vaseFallState = {
+          active: true,
+          vx: 0.15,
+          vy: 0.2,
+          vz: 0.55, // 廊下中央方向へ
+          rx: 1.2,
+          ry: 0.4,
+          rz: 2.5,
+          done: false
+        };
       }
       return;
     }
 
     if (vaseCinePhase === 1) {
-      // 落下中も花瓶を追う
       if (vaseMesh) {
         vaseMesh.getWorldPosition(vaseLookTarget);
         const dx = vaseLookTarget.x - player.position.x;
@@ -2702,20 +2766,30 @@
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
       camera.rotation.z = 0;
-      // 落下自体は updateVaseEvent の physics 部分が処理（cinematic 中は early return したのでここで物理）
+
       if (vaseFallState && vaseFallState.active && vaseMesh) {
-        vaseFallState.vy -= 9.5 * dt;
-        vaseMesh.position.y += vaseFallState.vy * dt;
+        const st = vaseFallState;
+        st.vy -= 9.5 * dt;
+        // 親ローカル座標で外側へ移動＋回転
+        vaseMesh.position.x += st.vx * dt;
+        vaseMesh.position.y += st.vy * dt;
+        vaseMesh.position.z += st.vz * dt;
+        vaseMesh.rotation.x += st.rx * dt;
+        vaseMesh.rotation.y += st.ry * dt;
+        vaseMesh.rotation.z += st.rz * dt;
+
         const wp = new THREE.Vector3();
         vaseMesh.getWorldPosition(wp);
         if (wp.y < 0.08) {
           const worldPos = wp.clone();
-          worldPos.y = 0.06;
+          worldPos.y = 0.05;
           scene.attach(vaseMesh);
           vaseMesh.position.copy(worldPos);
-          vaseMesh.rotation.set(1.2, 0.3, 0.5);
-          vaseFallState.active = false;
-          vaseFallState.done = true;
+          vaseMesh.rotation.set(1.4, 0.4, 1.1);
+          vaseMesh.visible = false; // 割れた本体は非表示
+          st.active = false;
+          st.done = true;
+          spawnVaseDebris(worldPos);
           for (let i = 0; i < interactables.length; i++) {
             if (interactables[i].id === 'vase') {
               interactables[i].position.set(worldPos.x, 0.35, worldPos.z);
@@ -2734,32 +2808,12 @@
     }
 
     if (vaseCinePhase === 2) {
-      // 約1.5秒注視
+      // 注視のみ。正面へ戻さない
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
       camera.rotation.z = 0;
       vaseCineTimer -= dt;
       if (vaseCineTimer <= 0) {
-        vaseCinePhase = 3;
-        vaseCineTimer = 0.6;
-      }
-      return;
-    }
-
-    if (vaseCinePhase === 3) {
-      // 視点を元に戻す
-      let dyaw = savedYaw - player.yaw;
-      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
-      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
-      player.yaw += dyaw * Math.min(1, dt * 4);
-      player.pitch += (savedPitch - player.pitch) * Math.min(1, dt * 4);
-      camera.rotation.y = player.yaw;
-      camera.rotation.x = player.pitch;
-      camera.rotation.z = 0;
-      vaseCineTimer -= dt;
-      if (vaseCineTimer <= 0 || (Math.abs(dyaw) < 0.05 && Math.abs(savedPitch - player.pitch) < 0.05)) {
-        player.yaw = savedYaw;
-        player.pitch = savedPitch;
         vaseCinematic = false;
         vaseCinePhase = 0;
       }
@@ -3130,13 +3184,31 @@
 
   function animate() {
     requestAnimationFrame(animate);
-    const dt = Math.min(clock.getDelta(), 0.05);
-    updatePlayer(dt);
-    updateDoorAnimation(dt);
-    updateBackDoorAnimation(dt);
-    updateVaseEvent(dt);
-    checkLoopTrigger();
-    updateInteraction();
+    const rawDt = Math.min(clock.getDelta(), 0.05);
+    // 調査・暗証番号中はゲーム世界の時間を停止（UIは操作可）
+    const worldPaused = (messageOpen || pinOpen) && !vaseCinematic;
+    const dt = worldPaused ? 0 : rawDt;
+
+    if (!worldPaused) {
+      updatePlayer(dt);
+      updateDoorAnimation(dt);
+      updateBackDoorAnimation(dt);
+      updateVaseEvent(dt);
+      updateVaseDebris(dt);
+      checkLoopTrigger();
+    } else {
+      // 調査中はカメラ位置だけ維持
+      camera.position.copy(player.position);
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+    }
+    if (!messageOpen && !pinOpen) updateInteraction();
+    else {
+      currentTarget = null;
+      if (actionBtn) actionBtn.classList.add('hidden');
+    }
     syncFlashlightBeam();
     renderer.render(scene, camera);
   }
