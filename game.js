@@ -134,13 +134,12 @@
   let headBobTime = 0;
   let headBobAmount = 0;
 
-  // 4周目イベント
   // ストーリー進行（loopCount・ドア通過回数とは独立）
-  // 1:導入 / 2:違和感 / 3:花瓶・暗号 / 4:異変・日記・金庫 / 5+:異変増加
+  // 1:導入探索 / 2:違和感＋薄い異変 / 3:花瓶・暗号＋異変増 / 4:日記・金庫 / 5+:さらに増
   let storyStage = 1;
   let anomalyLevel = 0;
   let loop4Spawned = false;
-  // 金庫: painting → code → opening → key → done
+  // 金庫: painting → code → opening → key_msg → done
   let safeState = 'painting';
   let safeOpened = false;
   let hasKey = false;
@@ -150,6 +149,14 @@
   let pinInput = '';
   let paintingCenterGroup = null;
   let anomalyRoot = null;
+  // 花瓶演出
+  let vaseCinematic = false;
+  let vaseCinePhase = 0;
+  let vaseCineTimer = 0;
+  let vaseLookTarget = new THREE.Vector3();
+  let savedYaw = 0;
+  let savedPitch = 0;
+  let messageNextMode = null;
 
   const canvas = document.getElementById('game-canvas');
   const joystickBase = document.getElementById('joystick-base');
@@ -1239,9 +1246,9 @@
       kind: 'inspect',
       label: '調べる',
       message: '特に何もない。',
-      position: new THREE.Vector3(x - 0.15, 0.7, z),
-      radius: 2.6,
-      hx: depth + 0.2, hy: 1.1, hz: len * 0.55
+      position: new THREE.Vector3(x - 0.2, 0.7, z),
+      radius: 2.0,
+      hx: depth + 0.15, hy: 1.0, hz: len * 0.4
     });
   }
 
@@ -1255,34 +1262,40 @@
     group.rotation.y = Math.PI / 2;
     group.scale.set(1.25, 1.25, 1.25);
 
-    const frameTex = createFurnitureWoodTexture(64, -20 - variant * 3);
+    const frameTex = createFurnitureWoodTexture(128, -20 - variant * 3);
     const frameMat = new THREE.MeshStandardMaterial({
-      map: frameTex, roughness: 0.55, metalness: 0.15, color: 0x6a5848
+      map: frameTex, roughness: 0.48, metalness: 0.18, color: 0x6a5848
     });
-    const outer = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.6, 0.05), frameMat);
+    // 厚みのある外枠
+    const outer = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.64, 0.07), frameMat);
     group.add(outer);
-    const inner = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.5, 0.04), frameMat);
-    inner.position.z = 0.02;
+    // 内枠（一段奥）
+    const inner = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.52, 0.05), frameMat);
+    inner.position.z = 0.025;
     group.add(inner);
+    // 角の段差
+    const bead = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.46, 0.02), frameMat);
+    bead.position.z = 0.04;
+    group.add(bead);
 
     const matte = makeMat(0x2a2520, 0.92, 0.02);
-    const matteMesh = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.42, 0.015), matte);
-    matteMesh.position.z = 0.035;
+    const matteMesh = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.42, 0.012), matte);
+    matteMesh.position.z = 0.048;
     group.add(matteMesh);
 
     const paintTex = createLandscapePaintingTexture(variant);
     const paintMat = new THREE.MeshStandardMaterial({
-      map: paintTex, roughness: 0.88, metalness: 0.02
+      map: paintTex, roughness: 0.82, metalness: 0.02
     });
-    const painting = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.38), paintMat);
-    painting.position.z = 0.048;
+    const painting = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.4), paintMat);
+    painting.position.z = 0.058;
     group.add(painting);
 
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff, roughness: 0.15, metalness: 0.3, transparent: true, opacity: 0.06
+      color: 0xffffff, roughness: 0.12, metalness: 0.35, transparent: true, opacity: 0.07
     });
-    const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.4), glassMat);
-    glass.position.z = 0.052;
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.41), glassMat);
+    glass.position.z = 0.062;
     group.add(glass);
 
     scene.add(group);
@@ -1387,40 +1400,35 @@
     });
   }
 
-  /** ストーリー段階4：異変レベル1＋日記＋金庫準備 */
+  /** ストーリー段階4：日記＋金庫（異変は ensureAnomalyLevel で別管理） */
   function spawnLoop4Events() {
     if (loop4Spawned) return;
     loop4Spawned = true;
     storyStage = 4;
-    anomalyLevel = 1;
-    anomalyRoot = new THREE.Group();
-    anomalyRoot.name = 'anomalies';
-    scene.add(anomalyRoot);
+    ensureAnomalyLevel(3);
 
-    addAnomalySet(1);
-
-    // 日記をカウンター天板に（カウンター: x=1.35, z=17.5, 天板高さ≈0.92）
+    // 日記をカウンター天板の廊下側に置く（調査しやすい位置）
+    // カウンター中心 (1.35, 0, 17.5)、天板上面 y≈0.95、廊下側は -X
     const diaryGroup = new THREE.Group();
-    diaryGroup.position.set(1.15, 0.935, 17.2);
-    diaryGroup.rotation.y = -0.25;
+    diaryGroup.position.set(1.05, 0.955, 17.0);
+    diaryGroup.rotation.y = 0.35;
     const cover = new THREE.Mesh(
-      new THREE.BoxGeometry(0.18, 0.025, 0.24),
-      new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 })
+      new THREE.BoxGeometry(0.2, 0.028, 0.26),
+      new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85, emissive: 0x1a1008, emissiveIntensity: 0.08 })
     );
     diaryGroup.add(cover);
     const pages = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.018, 0.22),
+      new THREE.BoxGeometry(0.17, 0.02, 0.23),
       new THREE.MeshStandardMaterial({ color: 0xd4c8a8, roughness: 0.88 })
     );
-    pages.position.y = 0.018;
+    pages.position.y = 0.02;
     diaryGroup.add(pages);
-    // 開きかけの紙
     const page2 = new THREE.Mesh(
-      new THREE.BoxGeometry(0.15, 0.008, 0.2),
+      new THREE.BoxGeometry(0.16, 0.01, 0.21),
       new THREE.MeshStandardMaterial({ color: 0xc8bc98, roughness: 0.9 })
     );
-    page2.position.set(0.02, 0.03, 0);
-    page2.rotation.z = 0.08;
+    page2.position.set(0.03, 0.035, 0);
+    page2.rotation.z = 0.12;
     diaryGroup.add(page2);
     scene.add(diaryGroup);
 
@@ -1429,27 +1437,54 @@
       kind: 'diary',
       label: '調べる',
       message: '',
-      position: new THREE.Vector3(1.15, 1.05, 17.2),
-      radius: 1.9,
-      hx: 0.35, hy: 0.3, hz: 0.35
+      position: new THREE.Vector3(1.0, 1.05, 17.0),
+      radius: 2.2,
+      hx: 0.45, hy: 0.4, hz: 0.4
     });
 
     createSafeBehindPainting();
     safeState = 'painting';
   }
 
-  /** 異変レベルに応じて汚れ・足跡を追加（重複なし） */
+  /** 異変レベルに応じて汚れ・足跡を追加（累積・減らない） */
   function addAnomalySet(level) {
     if (!anomalyRoot) {
       anomalyRoot = new THREE.Group();
       scene.add(anomalyRoot);
     }
     if (level === 1) {
-      // 床の血痕（少数）
-      const floorSpots = [
-        [0.35, 11.5, 0.42, 1], [-0.4, 19.2, 0.35, 2], [0.15, 30.5, 0.5, 3]
-      ];
-      floorSpots.forEach(function (p) {
+      // 2週目：薄い血痕のみ
+      [[0.4, 14.0, 0.28, 1], [-0.35, 22.0, 0.22, 2]].forEach(function (p) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(p[2], p[2] * 0.85),
+          makeDecalMat(createBloodStainTexture(p[3]), 0.45)
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.position.set(p[0], 0.006, p[1]);
+        anomalyRoot.add(m);
+      });
+    } else if (level === 2) {
+      // 3週目：増やす＋薄い足跡
+      [[0.25, 9.5, 0.32, 3], [-0.4, 28.0, 0.3, 4], [0.15, 33.0, 0.36, 5]].forEach(function (p) {
+        const m = new THREE.Mesh(
+          new THREE.PlaneGeometry(p[2], p[2] * 0.9),
+          makeDecalMat(createBloodStainTexture(p[3]), 0.58)
+        );
+        m.rotation.x = -Math.PI / 2;
+        m.position.set(p[0], 0.006, p[1]);
+        anomalyRoot.add(m);
+      });
+      const ws = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.32, 0.5),
+        makeDecalMat(createBloodStainTexture(6), 0.42)
+      );
+      ws.position.set(-CONFIG.corridorWidth / 2 + 0.015, 0.9, 16);
+      ws.rotation.y = Math.PI / 2;
+      anomalyRoot.add(ws);
+      addFootprints(4, 8.0, 3.2, 10);
+    } else if (level === 3) {
+      // 4週目：はっきりした異変
+      [[0.5, 11.5, 0.42, 7], [-0.3, 19.0, 0.38, 8], [0.2, 31.0, 0.48, 9]].forEach(function (p) {
         const m = new THREE.Mesh(
           new THREE.PlaneGeometry(p[2], p[2] * 0.85),
           makeDecalMat(createBloodStainTexture(p[3]), 0.72)
@@ -1458,45 +1493,25 @@
         m.position.set(p[0], 0.006, p[1]);
         anomalyRoot.add(m);
       });
-      // 壁のしみ
-      const ws = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.4, 0.65),
-        makeDecalMat(createBloodStainTexture(5), 0.55)
-      );
-      ws.position.set(-CONFIG.corridorWidth / 2 + 0.015, 1.15, 14.5);
-      ws.rotation.y = Math.PI / 2;
-      anomalyRoot.add(ws);
-      // 足跡（奥へ・少数）
-      addFootprints(6, 5.5, 2.8, 10);
-    } else if (level === 2) {
-      [[0.5, 8.0, 0.3, 7], [-0.25, 24.0, 0.38, 8], [0.1, 35.0, 0.45, 9]].forEach(function (p) {
-        const m = new THREE.Mesh(
-          new THREE.PlaneGeometry(p[2], p[2] * 0.9),
-          makeDecalMat(createBloodStainTexture(p[3]), 0.68)
-        );
-        m.rotation.x = -Math.PI / 2;
-        m.position.set(p[0], 0.006, p[1]);
-        anomalyRoot.add(m);
-      });
       const ws2 = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.32, 0.5),
-        makeDecalMat(createBloodStainTexture(11), 0.5)
+        new THREE.PlaneGeometry(0.4, 0.65),
+        makeDecalMat(createBloodStainTexture(11), 0.55)
       );
-      ws2.position.set(CONFIG.corridorWidth / 2 - 0.015, 0.95, 22);
-      ws2.rotation.y = -Math.PI / 2;
+      ws2.position.set(-CONFIG.corridorWidth / 2 + 0.015, 1.15, 24);
+      ws2.rotation.y = Math.PI / 2;
       anomalyRoot.add(ws2);
-      addFootprints(5, 22, 2.6, 20);
-    } else if (level >= 3) {
-      [[-0.55, 13, 0.28, 12], [0.45, 27, 0.4, 13]].forEach(function (p) {
+      addFootprints(7, 12.0, 2.6, 20);
+    } else if (level >= 4) {
+      [[-0.5, 15, 0.3, 12], [0.45, 26, 0.4, 13], [0.1, 36, 0.35, 14]].forEach(function (p) {
         const m = new THREE.Mesh(
           new THREE.PlaneGeometry(p[2], p[2]),
-          makeDecalMat(createBloodStainTexture(p[3]), 0.65)
+          makeDecalMat(createBloodStainTexture(p[3]), 0.7)
         );
         m.rotation.x = -Math.PI / 2;
         m.position.set(p[0], 0.006, p[1]);
         anomalyRoot.add(m);
       });
-      addFootprints(4, 34, 2.5, 30);
+      addFootprints(5, 30, 2.4, 30);
     }
   }
 
@@ -1536,33 +1551,39 @@
     if (actionBtn) actionBtn.classList.add('hidden');
   }
 
-  /** ストーリー段階の更新（イベント完了時のみ） */
+  /** ストーリー段階の更新（謎解き中の通過では進めない） */
   function updateStoryOnLoop() {
-    // 通常ループでの段階進行（謎解き中の通過では story を進めない）
-    if (puzzleStarted && !puzzleSolved) {
-      // 謎解き中は storyStage を維持
-      return;
-    }
+    if (puzzleStarted && !puzzleSolved) return;
+
     if (storyStage === 1 && loopCount >= 2) {
       storyStage = 2;
+      ensureAnomalyLevel(1); // 2週目：薄い異変
     }
     if (storyStage === 2 && loopCount >= 3) {
       storyStage = 3;
+      ensureAnomalyLevel(2); // 3週目：増やす
     }
-    // ステージ4は暗号成功後の次のループ到達時
+    // 暗号成功後の次ループでステージ4（日記・金庫）
     if (puzzleSolved && storyStage === 3) {
       storyStage = 4;
+      ensureAnomalyLevel(3);
       if (!loop4Spawned) spawnLoop4Events();
     }
-    // ステージ5以降：異変の増加（鍵取得後など）
-    if (storyStage >= 4 && hasKey && anomalyLevel < 2) {
-      anomalyLevel = 2;
+    if (storyStage >= 4 && hasKey && anomalyLevel < 4) {
       storyStage = 5;
-      addAnomalySet(2);
-    } else if (storyStage >= 5 && anomalyLevel < 3 && loopCount >= 6) {
-      anomalyLevel = 3;
-      storyStage = 6;
-      addAnomalySet(3);
+      ensureAnomalyLevel(4);
+    }
+  }
+
+  function ensureAnomalyLevel(level) {
+    if (!anomalyRoot) {
+      anomalyRoot = new THREE.Group();
+      anomalyRoot.name = 'anomalies';
+      scene.add(anomalyRoot);
+    }
+    while (anomalyLevel < level) {
+      anomalyLevel += 1;
+      addAnomalySet(anomalyLevel);
     }
   }
 
@@ -1670,21 +1691,12 @@
       safeOpened = true;
       if (keyObject) keyObject.visible = true;
       if (safeObject) safeObject.rotation.y += 0.25;
-      // 金庫の再解読を防ぐ
       for (let i = 0; i < interactables.length; i++) {
         if (interactables[i].id === 'safe') interactables[i].radius = 0;
       }
-      registerInteractable({
-        id: 'key',
-        kind: 'key',
-        label: '調べる',
-        message: '',
-        position: new THREE.Vector3(-1.5, 1.4, 28.05),
-        radius: 1.6,
-        hx: 0.25, hy: 0.25, hz: 0.25
-      });
-      safeState = 'key';
-      showMessage('金庫が開いた。');
+      // まだ鍵は取得しない。「次へ」で取得
+      safeState = 'key_msg';
+      showMessageWithNext('金庫が開いた。', 'safe_key');
     } else {
       pinInput = '';
       const disp = document.getElementById('pin-display');
@@ -1692,6 +1704,38 @@
       showMessage('……違う番号のようだ。');
       closePinUI();
     }
+  }
+
+  function showMessageWithNext(text, mode) {
+    messageOpen = true;
+    messageNextMode = mode;
+    if (messageText) messageText.textContent = text;
+    messagePanel.classList.remove('hidden');
+    if (actionBtn) actionBtn.classList.add('hidden');
+    const closeBtn = document.getElementById('message-close');
+    const nextBtn = document.getElementById('message-next');
+    if (closeBtn) closeBtn.classList.add('hidden');
+    if (nextBtn) nextBtn.classList.remove('hidden');
+  }
+
+  function onMessageNext() {
+    if (messageNextMode === 'safe_key' && !hasKey) {
+      hasKey = true;
+      safeState = 'done';
+      messageNextMode = null;
+      if (keyObject) keyObject.visible = false;
+      // 通常の閉じるUIに戻して鍵入手メッセージ
+      const closeBtn = document.getElementById('message-close');
+      const nextBtn = document.getElementById('message-next');
+      if (closeBtn) closeBtn.classList.remove('hidden');
+      if (nextBtn) nextBtn.classList.add('hidden');
+      if (messageText) messageText.textContent = '鍵を入手した。';
+      messageOpen = true;
+      messagePanel.classList.remove('hidden');
+      return;
+    }
+    messageNextMode = null;
+    closeMessage();
   }
 
   function setupPinUI() {
@@ -1802,31 +1846,43 @@
 
     const col = addCollider(-0.65, 0, z - 0.15, 1.3, 2.35, 0.35);
 
-    // ドア枠まわりの壁パネル（前方・後方とも同じ構造で埋め込む）
+    // ドア枠まわりの壁：枠と面一に埋め込み、隙間・段差を出さない
     {
       const wallFillMat = new THREE.MeshStandardMaterial({
         map: createWallTexture(128),
-        roughness: 0.88,
+        roughness: 0.9,
         metalness: 0.02,
-        color: 0xc8bca8
+        color: 0xc4b8a4
       });
-      const aboveH = CONFIG.corridorHeight - doorH - frameThick;
+      const wallZ = 0.01;
+      const wallD = 0.14;
+      const aboveH = Math.max(0.2, CONFIG.corridorHeight - (doorH + frameThick));
+      // 上部：枠の直上から天井まで、廊下全幅
       const above = new THREE.Mesh(
-        new THREE.BoxGeometry(CONFIG.corridorWidth - 0.04, Math.max(0.15, aboveH), 0.1),
+        new THREE.BoxGeometry(CONFIG.corridorWidth - 0.02, aboveH, wallD),
         wallFillMat
       );
-      above.position.set(0, doorH + frameThick + Math.max(0.15, aboveH) / 2, -0.02);
+      above.position.set(0, doorH + frameThick + aboveH / 2, wallZ);
       group.add(above);
-      const fillW = (CONFIG.corridorWidth - doorW) / 2 - 0.04;
-      if (fillW > 0.05) {
+      // 左右：枠外側から壁端まで、床から枠上端まで
+      const fillW = (CONFIG.corridorWidth - doorW) / 2 - frameThick - 0.01;
+      if (fillW > 0.04) {
         const fillH = doorH + frameThick;
-        const leftFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.1), wallFillMat);
-        leftFill.position.set(-(doorW / 2 + frameThick + fillW / 2), fillH / 2, -0.02);
+        const leftFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, wallD), wallFillMat);
+        leftFill.position.set(-(doorW / 2 + frameThick + fillW / 2), fillH / 2, wallZ);
         group.add(leftFill);
-        const rightFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, 0.1), wallFillMat);
-        rightFill.position.set(doorW / 2 + frameThick + fillW / 2, fillH / 2, -0.02);
+        const rightFill = new THREE.Mesh(new THREE.BoxGeometry(fillW, fillH, wallD), wallFillMat);
+        rightFill.position.set(doorW / 2 + frameThick + fillW / 2, fillH / 2, wallZ);
         group.add(rightFill);
       }
+      // 枠と壁の接合を隠す薄いカバー
+      const seamMat = wallFillMat.clone();
+      const topSeam = new THREE.Mesh(
+        new THREE.BoxGeometry(doorW + frameThick * 2 + 0.04, 0.04, wallD + 0.02),
+        seamMat
+      );
+      topSeam.position.set(0, doorH + frameThick + 0.01, wallZ);
+      group.add(topSeam);
     }
 
     if (id === 'front') {
@@ -1891,7 +1947,7 @@
     zone.addEventListener('touchcancel', onTouchEnd, { passive: false });
 
     window.addEventListener('keydown', function (e) {
-      if (settingsOpen || gameState !== 'playing') return;
+      if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
       switch (e.code) {
         case 'KeyW': case 'ArrowUp': keys.forward = true; break;
         case 'KeyS': case 'ArrowDown': keys.back = true; break;
@@ -1909,14 +1965,14 @@
     });
 
     canvas.addEventListener('mousedown', function (e) {
-      if (settingsOpen || gameState !== 'playing' || e.button !== 0) return;
+      if (settingsOpen || vaseCinematic || gameState !== 'playing' || e.button !== 0) return;
       mouseLook.active = true;
       mouseLook.lastX = e.clientX;
       mouseLook.lastY = e.clientY;
     });
     window.addEventListener('mouseup', function () { mouseLook.active = false; });
     window.addEventListener('mousemove', function (e) {
-      if (!mouseLook.active || settingsOpen || gameState !== 'playing') return;
+      if (!mouseLook.active || settingsOpen || vaseCinematic || gameState !== 'playing') return;
       const dx = e.clientX - mouseLook.lastX;
       const dy = e.clientY - mouseLook.lastY;
       mouseLook.lastX = e.clientX;
@@ -1927,7 +1983,7 @@
   }
 
   function onTouchStart(e) {
-    if (settingsOpen || gameState !== 'playing') return;
+    if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
     e.preventDefault();
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
@@ -1947,7 +2003,7 @@
   }
 
   function onTouchMove(e) {
-    if (settingsOpen || gameState !== 'playing') return;
+    if (settingsOpen || vaseCinematic || gameState !== 'playing') return;
     e.preventDefault();
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
@@ -2010,8 +2066,8 @@
   // MOVEMENT & COLLISION
   // ============================================================
   function updatePlayer(dt) {
+    if (vaseCinematic) return; // 花瓶演出は updateVaseCinematic がカメラを制御
     if (settingsOpen || pinOpen || gameState !== 'playing' || loopInProgress) {
-      // 設定中・暗証番号入力中・タイトル中もカメラ位置は同期
       camera.position.copy(player.position);
       camera.rotation.order = 'YXZ';
       camera.rotation.y = player.yaw;
@@ -2538,10 +2594,16 @@
     backDoorState.pivot.rotation.y = backDoorState.angle;
   }
 
-  /** ストーリー段階3：花瓶落下（loopCount ではなく story / 初回フラグで管理） */
+  /** ストーリー段階3：花瓶落下＋カメラ演出 */
   function updateVaseEvent(dt) {
-    // 段階3以降、まだ落ちていなければ発生（謎解き通過で loopCount が増えても1回だけ）
     if (storyStage < 3 && loopCount < 3) return;
+
+    // 演出中：操作ロック・カメラ追従
+    if (vaseCinematic) {
+      updateVaseCinematic(dt);
+      return;
+    }
+
     if (!vaseEventTriggered && gameState === 'playing' && !loopInProgress) {
       if (player.position.z > 6.5) {
         startVaseFall();
@@ -2550,11 +2612,9 @@
     if (vaseFallState && vaseFallState.active && vaseMesh) {
       vaseFallState.vy -= 9.5 * dt;
       vaseMesh.position.y += vaseFallState.vy * dt;
-      // ワールドYに変換して床判定（親が回転しているため簡易にローカル下限）
       const wp = new THREE.Vector3();
       vaseMesh.getWorldPosition(wp);
       if (wp.y < 0.08) {
-        // 床に着地：親から外してシーン直下へ
         const worldPos = wp.clone();
         worldPos.y = 0.06;
         scene.attach(vaseMesh);
@@ -2562,7 +2622,6 @@
         vaseMesh.rotation.set(1.2, 0.3, 0.5);
         vaseFallState.active = false;
         vaseFallState.done = true;
-        // 落ちた花瓶の調査位置・文言を更新
         for (let i = 0; i < interactables.length; i++) {
           if (interactables[i].id === 'vase') {
             interactables[i].position.set(worldPos.x, 0.35, worldPos.z);
@@ -2573,6 +2632,11 @@
           }
         }
         if (!paperSpawned) spawnPaper(worldPos);
+        // 着地後は注視フェーズへ
+        if (vaseCinePhase === 1) {
+          vaseCinePhase = 2;
+          vaseCineTimer = 1.5;
+        }
       }
     }
   }
@@ -2580,7 +2644,126 @@
   function startVaseFall() {
     if (vaseEventTriggered || !vaseMesh) return;
     vaseEventTriggered = true;
-    vaseFallState = { active: true, vy: 0.3, done: false };
+    vaseCinematic = true;
+    vaseCinePhase = 0;
+    vaseCineTimer = 0;
+    savedYaw = player.yaw;
+    savedPitch = player.pitch;
+    // 操作ロック
+    joystick.active = false;
+    joystick.dx = 0;
+    joystick.dy = 0;
+    lookTouch.active = false;
+    dashHeld = false;
+    // 花瓶のワールド位置を目標に
+    vaseMesh.getWorldPosition(vaseLookTarget);
+  }
+
+  function updateVaseCinematic(dt) {
+    // カメラ位置はプレイヤー位置を維持（暗転なし）
+    camera.position.copy(player.position);
+    camera.rotation.order = 'YXZ';
+
+    if (vaseCinePhase === 0) {
+      // 花瓶方向へ滑らかに向く
+      const dx = vaseLookTarget.x - player.position.x;
+      const dy = vaseLookTarget.y - player.position.y;
+      const dz = vaseLookTarget.z - player.position.z;
+      const targetYaw = Math.atan2(-dx, -dz);
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const targetPitch = Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)) * 0.6;
+      // 最短角度補間
+      let dyaw = targetYaw - player.yaw;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      player.yaw += dyaw * Math.min(1, dt * 3.2);
+      player.pitch += (targetPitch - player.pitch) * Math.min(1, dt * 3.2);
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+      if (Math.abs(dyaw) < 0.08 && Math.abs(targetPitch - player.pitch) < 0.08) {
+        vaseCinePhase = 1;
+        vaseFallState = { active: true, vy: 0.35, done: false };
+      }
+      return;
+    }
+
+    if (vaseCinePhase === 1) {
+      // 落下中も花瓶を追う
+      if (vaseMesh) {
+        vaseMesh.getWorldPosition(vaseLookTarget);
+        const dx = vaseLookTarget.x - player.position.x;
+        const dy = vaseLookTarget.y - player.position.y;
+        const dz = vaseLookTarget.z - player.position.z;
+        player.yaw = Math.atan2(-dx, -dz);
+        const horiz = Math.sqrt(dx * dx + dz * dz);
+        player.pitch = Math.atan2(dy, horiz) * 0.55;
+      }
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+      // 落下自体は updateVaseEvent の physics 部分が処理（cinematic 中は early return したのでここで物理）
+      if (vaseFallState && vaseFallState.active && vaseMesh) {
+        vaseFallState.vy -= 9.5 * dt;
+        vaseMesh.position.y += vaseFallState.vy * dt;
+        const wp = new THREE.Vector3();
+        vaseMesh.getWorldPosition(wp);
+        if (wp.y < 0.08) {
+          const worldPos = wp.clone();
+          worldPos.y = 0.06;
+          scene.attach(vaseMesh);
+          vaseMesh.position.copy(worldPos);
+          vaseMesh.rotation.set(1.2, 0.3, 0.5);
+          vaseFallState.active = false;
+          vaseFallState.done = true;
+          for (let i = 0; i < interactables.length; i++) {
+            if (interactables[i].id === 'vase') {
+              interactables[i].position.set(worldPos.x, 0.35, worldPos.z);
+              interactables[i].message = '花瓶が割れている。中から紙切れが落ちたようだ。';
+              if (interactables[i].hitMesh) {
+                interactables[i].hitMesh.position.set(worldPos.x, 0.2, worldPos.z);
+              }
+            }
+          }
+          if (!paperSpawned) spawnPaper(worldPos);
+          vaseCinePhase = 2;
+          vaseCineTimer = 1.5;
+        }
+      }
+      return;
+    }
+
+    if (vaseCinePhase === 2) {
+      // 約1.5秒注視
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+      vaseCineTimer -= dt;
+      if (vaseCineTimer <= 0) {
+        vaseCinePhase = 3;
+        vaseCineTimer = 0.6;
+      }
+      return;
+    }
+
+    if (vaseCinePhase === 3) {
+      // 視点を元に戻す
+      let dyaw = savedYaw - player.yaw;
+      while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+      while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+      player.yaw += dyaw * Math.min(1, dt * 4);
+      player.pitch += (savedPitch - player.pitch) * Math.min(1, dt * 4);
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+      vaseCineTimer -= dt;
+      if (vaseCineTimer <= 0 || (Math.abs(dyaw) < 0.05 && Math.abs(savedPitch - player.pitch) < 0.05)) {
+        player.yaw = savedYaw;
+        player.pitch = savedPitch;
+        vaseCinematic = false;
+        vaseCinePhase = 0;
+      }
+    }
   }
 
   function spawnPaper(nearPos) {
@@ -2703,6 +2886,20 @@
       closeMessage();
     }, { passive: false });
 
+    const messageNext = document.getElementById('message-next');
+    if (messageNext) {
+      messageNext.addEventListener('click', function (e) {
+        e.stopPropagation();
+        e.preventDefault();
+        onMessageNext();
+      });
+      messageNext.addEventListener('touchend', function (e) {
+        e.stopPropagation();
+        e.preventDefault();
+        onMessageNext();
+      }, { passive: false });
+    }
+
     messagePanel.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
     messagePanel.addEventListener('touchmove', function (e) { e.stopPropagation(); }, { passive: true });
   }
@@ -2716,20 +2913,6 @@
     }
     if (currentTarget.kind === 'safe') {
       if (safeState === 'code') openPinUI();
-      return;
-    }
-    if (currentTarget.kind === 'key') {
-      if (safeState === 'key' && !hasKey) {
-        hasKey = true;
-        safeState = 'done';
-        showMessage('古い鍵を手に入れた。');
-        if (keyObject) keyObject.visible = false;
-        currentTarget.radius = 0;
-        // 鍵取得後、次のループで異変増加
-        if (anomalyLevel < 2) {
-          // 現時点ではまだ増やさない。次の updateStoryOnLoop で増やす
-        }
-      }
       return;
     }
     if (currentTarget.kind === 'diary') {
@@ -2769,7 +2952,8 @@
 
     showMessage(item.message || '特に何もない。');
 
-    if (firstTime && !allInspectedNarrationShown) {
+    // 最初の探索段階の対象のみで完了判定（後の日記・紙などに引きずられない）
+    if (firstTime && !allInspectedNarrationShown && storyStage <= 2) {
       const needed = ['vase', 'shelf', 'table', 'painting_l', 'painting_c', 'painting_r'];
       let all = true;
       for (let i = 0; i < needed.length; i++) {
@@ -2784,15 +2968,24 @@
 
   function showMessage(text) {
     messageOpen = true;
-    messageText.textContent = text;
+    messageNextMode = null;
+    if (messageText) messageText.textContent = text;
     messagePanel.classList.remove('hidden');
     if (actionBtn) actionBtn.classList.add('hidden');
+    const closeBtn = document.getElementById('message-close');
+    const nextBtn = document.getElementById('message-next');
+    if (closeBtn) closeBtn.classList.remove('hidden');
+    if (nextBtn) nextBtn.classList.add('hidden');
   }
 
   function closeMessage() {
     messageOpen = false;
+    messageNextMode = null;
     messagePanel.classList.add('hidden');
-    // キューに残があれば続けて表示
+    const closeBtn = document.getElementById('message-close');
+    const nextBtn = document.getElementById('message-next');
+    if (closeBtn) closeBtn.classList.remove('hidden');
+    if (nextBtn) nextBtn.classList.add('hidden');
     if (messageQueue.length > 0) {
       setTimeout(function () { drainMessageQueue(); }, 80);
     }
@@ -2868,11 +3061,12 @@
 
     let chosen = null;
     if (hits.length > 0) {
-      // 紙がヒットに含まれる場合は紙を優先（棚の大型ヒットボックスに負けない）
+      // 紙・日記を優先（大型家具のヒットに負けない）
       let pickId = hits[0].object.userData.interactId;
       for (let h = 0; h < hits.length; h++) {
-        if (hits[h].object.userData.interactId === 'paper') {
-          pickId = 'paper';
+        const hid = hits[h].object.userData.interactId;
+        if (hid === 'diary' || hid === 'paper') {
+          pickId = hid;
           break;
         }
       }
@@ -2895,8 +3089,11 @@
         if (align < 0.45) continue;
         let score = align * 2.0 - candidates[i].dist * 0.35;
         if (candidates[i].it.id === 'paper') {
-          score += 1.2; // 紙を優先（棚・花瓶との誤選択防止）
-          if (fwd.y < -0.15) score += 0.8; // 見下ろし時さらに優先
+          score += 1.2;
+          if (fwd.y < -0.15) score += 0.8;
+        }
+        if (candidates[i].it.id === 'diary') {
+          score += 1.5; // 日記をカウンターより優先
         }
         if (score > bestScore) {
           bestScore = score;

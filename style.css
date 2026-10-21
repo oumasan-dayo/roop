@@ -356,6 +356,22 @@ html, body {
   background: rgba(255, 255, 255, 0.16);
 }
 
+#message-next {
+  width: 100%;
+  padding: 11px;
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(212, 184, 74, 0.35);
+  background: rgba(212, 184, 74, 0.15);
+  color: #e8d9a0;
+  font-size: 14px;
+  cursor: pointer;
+}
+#message-next.hidden { display: none; }
+#message-next:active {
+  background: rgba(212, 184, 74, 0.28);
+}
+
 @media (orientation: landscape) {
   #action-btn {
     bottom: calc(28px + env(safe-area-inset-bottom, 12px));
