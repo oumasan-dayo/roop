@@ -1681,26 +1681,35 @@
   function revealSafe() {
     if (safeState !== 'painting') return;
     safeState = 'code';
+    // 金庫未生成ならここで生成（第4章イベント未スポーン時の保険）
+    if (!safeObject) createSafeBehindPainting();
     if (paintingCenterGroup) {
       paintingCenterGroup.position.z += 0.55;
       paintingCenterGroup.position.x += 0.05;
       paintingCenterGroup.rotation.y += 0.15;
     }
-    // 絵画の調査を無効化
+    // 絵画の調査を無効化（金庫へ誘導）
     for (let i = 0; i < interactables.length; i++) {
       if (interactables[i].id === 'painting_c') interactables[i].radius = 0;
     }
     if (safeObject) {
       safeObject.visible = true;
-      registerInteractable({
-        id: 'safe',
-        kind: 'safe',
-        label: '調べる',
-        message: '',
-        position: new THREE.Vector3(-1.5, 1.45, 28.0),
-        radius: 1.8,
-        hx: 0.35, hy: 0.45, hz: 0.35
-      });
+      // 既に safe が登録済みなら重複しない
+      let hasSafe = false;
+      for (let i = 0; i < interactables.length; i++) {
+        if (interactables[i].id === 'safe') { hasSafe = true; break; }
+      }
+      if (!hasSafe) {
+        registerInteractable({
+          id: 'safe',
+          kind: 'safe',
+          label: '調べる',
+          message: '',
+          position: new THREE.Vector3(-1.5, 1.45, 28.0),
+          radius: 2.0,
+          hx: 0.4, hy: 0.5, hz: 0.4
+        });
+      }
     }
   }
 
@@ -3807,39 +3816,54 @@
     }
   }
 
+  function isCenterPainting(item) {
+    if (!item) return false;
+    if (item.id === 'painting_c') return true;
+    // 位置でも判定（id 欠落や誤登録への保険）
+    if (item.id && String(item.id).indexOf('painting') === 0) {
+      if (item.position && Math.abs(item.position.z - 28.0) < 1.2) return true;
+    }
+    return false;
+  }
+
   function doInspect(item) {
     if (messageOpen || pinOpen) return;
     // 金庫シーケンス中は他オブジェクトを調べない
-    if (safeState === 'code' || safeState === 'opening' || safeState === 'key') {
-      if (item.id !== 'painting_c') return;
+    if (safeState === 'code' || safeState === 'opening' || safeState === 'key' || safeState === 'key_msg') {
+      if (!isCenterPainting(item)) return;
     }
+
+    // ---- 第4章：中央絵画 → 金庫出現（通常メッセージより必ず先に判定）----
+    // loop4Spawned / storyStage / puzzleSolved のいずれかで第4章相当とみなす
+    const chapter4Ready = (storyStage >= 4) || loop4Spawned || (puzzleSolved && storyStage >= 3);
+    if (isCenterPainting(item) && safeState === 'painting' && chapter4Ready) {
+      if (!loop4Spawned) spawnLoop4Events();
+      if (storyStage < 4) storyStage = 4;
+      inspectedSet[item.id] = true;
+      item.inspected = true;
+      revealSafe();
+      showMessage('絵の裏に、何かがある……。');
+      return;
+    }
+    if (isCenterPainting(item) && safeState !== 'painting') {
+      inspectedSet[item.id] = true;
+      item.inspected = true;
+      showMessage('裏に金庫が取り付けられている。');
+      return;
+    }
+
     const firstTime = !inspectedSet[item.id];
     inspectedSet[item.id] = true;
     item.inspected = true;
 
-        if (item.id && item.id.indexOf('painting') === 0) {
-      showMessage('特に何もない。');
-      return;
-    }
     if (item.id === 'paper' || item.kind === 'paper') {
       showMessage('紙には、四つの矢印が書かれている。\n\n↑　↓　↓　↑');
       return;
     }
 
-    // ストーリー段階4以降：中央絵画 → 金庫出現
-    if (item.id === 'painting_c' && storyStage >= 4 && safeState === 'painting') {
-      revealSafe();
-      showMessage('絵の裏に、何かがある……。');
-      return;
-    }
-    if (item.id === 'painting_c' && safeState !== 'painting') {
-      showMessage('裏に金庫が取り付けられている。');
-      return;
-    }
-
+    // 通常の絵画（左右）・その他
     showMessage(item.message || '特に何もない。');
 
-    // 最初の探索段階の対象のみで完了判定（後の日記・紙などに引きずられない）
     if (firstTime && !allInspectedNarrationShown && storyStage <= 2) {
       const needed = ['vase', 'shelf', 'table', 'painting_l', 'painting_c', 'painting_r'];
       let all = true;
@@ -3981,6 +4005,11 @@
         }
         if (candidates[i].it.id === 'diary') {
           score += 1.5; // 日記をカウンターより優先
+        }
+        // 第4章：中央絵画を優先して金庫イベントへ繋ぐ
+        if (candidates[i].it.id === 'painting_c' && safeState === 'painting' &&
+            (storyStage >= 4 || loop4Spawned || puzzleSolved)) {
+          score += 2.0;
         }
         if (score > bestScore) {
           bestScore = score;
