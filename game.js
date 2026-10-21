@@ -164,7 +164,7 @@
   let room4Group = null;
   let room4DoorState = null;
   let escapeExitMesh = null;
-  let chaseFaceSpeed = 2.15;
+  let chaseFaceSpeed = 3.05;
   let chapterAnnounced = {};
   let retryCheckpoint = null;
   // 顔チェイス段階: idle | emerge | chase | caught
@@ -172,6 +172,8 @@
   let faceEmergeT = 0;
   let faceStartPos = new THREE.Vector3();
   let faceCaught = false;
+  let fleeHintActive = false;
+  let controlsLocked = false;
   let faceCatchT = 0;
   let room4Origin = new THREE.Vector3(); // 部屋固定座標
   // 花瓶演出
@@ -1919,11 +1921,12 @@
     door.position.set(0, doorH / 2, 0.01);
     leaf.add(door);
     // 裏側の黒遮蔽（閉じ時の白漏れ防止）
+    // 裏側のみ（プレイヤー側から見えない位置）。表の木目ドアは維持
     const doorBack = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW * 0.98, doorH * 0.98, 0.02),
-      new THREE.MeshBasicMaterial({ color: 0x000000 })
+      new THREE.BoxGeometry(doorW * 0.96, doorH * 0.96, 0.015),
+      new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.FrontSide })
     );
-    doorBack.position.set(0, doorH / 2, -0.03);
+    doorBack.position.set(0, doorH / 2, -0.045);
     leaf.add(doorBack);
     const handle = new THREE.Mesh(
       new THREE.BoxGeometry(0.03, 0.1, 0.06),
@@ -2277,6 +2280,79 @@
     lookTouch.active = false;
   }
 
+
+  /** チェイス用に廊下を白い部屋より長く延長し、逆走を塞ぐ */
+  function extendChaseCorridor() {
+    if (window._chaseExtended) return;
+    window._chaseExtended = true;
+    const L = CONFIG.corridorLength;
+    const W = CONFIG.corridorWidth;
+    const H = CONFIG.corridorHeight;
+    const halfW = W / 2;
+    // 白い部屋奥行き45より長い逃走区間：奥ドアの先をさらに +50 延長
+    const extra = 52;
+    const wallMat = sharedWallMat
+      ? sharedWallMat.clone()
+      : new THREE.MeshStandardMaterial({ color: 0xb8ac98, roughness: 0.92 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0xa09078, roughness: 0.85 });
+    const ceilMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 0.95 });
+
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, extra), floorMat);
+    floor.position.set(0, 0.01, L + extra / 2);
+    scene.add(floor);
+    const ceil = new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, extra), ceilMat);
+    ceil.position.set(0, H, L + extra / 2);
+    scene.add(ceil);
+    const left = new THREE.Mesh(new THREE.PlaneGeometry(extra, H), wallMat);
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-halfW, H / 2, L + extra / 2);
+    scene.add(left);
+    const right = new THREE.Mesh(new THREE.PlaneGeometry(extra, H), wallMat.clone());
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(halfW, H / 2, L + extra / 2);
+    scene.add(right);
+
+    // 延長区間の壁コリジョン
+    addCollider(-halfW - 0.5, 0, L, 0.5, H, extra);
+    addCollider(halfW, 0, L, 0.5, H, extra);
+    // 行き止まり（脱出光のさらに奥）
+    addCollider(-halfW, 0, L + extra - 0.3, W, H, 0.5);
+
+    // チェイス中：入口側・Room4以外の逆走を塞ぐ（廊下入口付近）
+    const block = new THREE.Mesh(
+      new THREE.BoxGeometry(W - 0.2, H, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0x2a241c, roughness: 0.9 })
+    );
+    block.position.set(0, H / 2, 1.2);
+    scene.add(block);
+    addCollider(-halfW + 0.1, 0, 1.0, W - 0.2, H, 0.4);
+    window._chaseBlockMesh = block;
+
+    // 移動範囲を延長
+    playBounds.zMaxOpen = L + extra - 0.5;
+    playBounds.zMaxClosed = L + extra - 0.5;
+
+    // 出口光を延長先に
+    if (escapeExitMesh) {
+      scene.remove(escapeExitMesh);
+      escapeExitMesh = null;
+    }
+    const z = L + extra - 2.0;
+    const group = new THREE.Group();
+    group.position.set(0, 1.1, z);
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.0, 2.1),
+      new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.88, depthWrite: false })
+    );
+    group.add(glow);
+    const light = new THREE.PointLight(0xfff8f0, 2.0, 6, 1.6);
+    light.position.set(0, 0, 0.2);
+    group.add(light);
+    scene.add(group);
+    escapeExitMesh = group;
+    window._escapeExitZ = z;
+  }
+
   function spawnEscapeExit() {
     if (escapeExitMesh) return;
     // 奥ドアの「向こう側」に置き、ドア枠内に収まる大きさに制限（隙間はみ出し防止）
@@ -2334,24 +2410,30 @@
       room4Face.position.z = faceStartPos.z + (endPos.z - faceStartPos.z) * e;
       faceLookAtPlayer();
 
-      // 中盤でカメラを顔に大きく寄せ、終盤で操作視点へ戻す
+      // カメラを顔へ接近（プレイヤー座標は動かさない）
       const lookDx = room4Face.position.x - player.position.x;
       const lookDz = room4Face.position.z - player.position.z;
       player.yaw = Math.atan2(-lookDx, -lookDz);
-      // t=0.35〜0.7 で迫力の寄り
-      let camDist = 0;
-      if (t < 0.35) {
-        camDist = 0;
-        player.pitch = -0.05;
-      } else if (t < 0.72) {
-        const u = (t - 0.35) / 0.37;
-        camDist = smootherstep(u) * 1.35; // 前進して顔を大きく
-        player.pitch = -0.05 + u * 0.08;
+      controlsLocked = true;
+      setControlsVisible(false);
+      clearAllInput();
+
+      // 距離: プレイヤーから顔までの距離の一部まで寄る（貫通しない）
+      const fullDist = Math.max(1.2, Math.sqrt(lookDx * lookDx + lookDz * lookDz));
+      let approach = 0; // 0=プレイヤー位置, 1=顔の手前 0.85m
+      if (t < 0.25) {
+        approach = 0;
+        player.pitch = -0.04;
+      } else if (t < 0.85) {
+        const u = (t - 0.25) / 0.6;
+        approach = smootherstep(u) * 0.92; // 終盤で強く接近
+        player.pitch = -0.04 + smootherstep(u) * 0.06;
       } else {
-        const u = (t - 0.72) / 0.28;
-        camDist = 1.35 * (1 - smootherstep(u));
-        player.pitch = 0.03 * (1 - u);
+        const u = (t - 0.85) / 0.15;
+        approach = 0.92 * (1 - smootherstep(u) * 0.35); // 少し引いてから操作へ
+        player.pitch = 0.02 * (1 - u);
       }
+      const camDist = Math.min(fullDist - 0.9, fullDist * approach);
       const fwdX = -Math.sin(player.yaw);
       const fwdZ = -Math.cos(player.yaw);
       camera.position.set(
@@ -2368,10 +2450,11 @@
         facePhase = 'chase';
         room4Chase = true;
         faceCaught = false;
-        window._chaseGrace = 2.8;
-        gameState = 'playing';
+        window._chaseGrace = 2.5;
+        camera.position.copy(player.position);
         if (!escapeExitMesh) spawnEscapeExit();
-        showChaseHint('逃げろ。');
+        extendChaseCorridor();
+        showChaseHint('逃げろ。'); // この中で操作ロック継続→終了後に解禁
       }
       return;
     }
@@ -2413,7 +2496,7 @@
     }
 
     // 奥の光、または開いた後ろドアから脱出
-    if (escapeExitMesh && player.position.z > CONFIG.corridorLength - 0.5 && Math.abs(player.position.x) < 0.55) {
+    if (escapeExitMesh && player.position.z > (window._escapeExitZ || CONFIG.corridorLength) - 0.8 && Math.abs(player.position.x) < 0.6) {
       onEscapeSuccess();
     }
     if (room4Chase && backDoorState && backDoorState.open && player.position.z < 0.6 && Math.abs(player.position.x) < 0.7) {
@@ -2422,21 +2505,63 @@
   }
 
   function showChaseHint(text) {
-    // messageOpen にしない一時表示（追跡を止めない）
+    fleeHintActive = true;
+    controlsLocked = true;
+    clearAllInput();
+    setControlsVisible(false);
+    gameState = 'intro';
+
     const el = document.getElementById('message-panel');
     const mt = document.getElementById('message-text');
-    if (!el || !mt) return;
-    mt.textContent = text;
-    el.classList.remove('hidden');
-    const closeBtn = document.getElementById('message-close');
-    const nextBtn = document.getElementById('message-next');
-    if (closeBtn) closeBtn.classList.add('hidden');
-    if (nextBtn) nextBtn.classList.add('hidden');
+    if (el && mt) {
+      mt.textContent = text;
+      el.classList.remove('hidden');
+      const closeBtn = document.getElementById('message-close');
+      const nextBtn = document.getElementById('message-next');
+      if (closeBtn) closeBtn.classList.add('hidden');
+      if (nextBtn) nextBtn.classList.add('hidden');
+    }
     setTimeout(function () {
-      if (mt.textContent === text) {
+      if (el) el.classList.add('hidden');
+      fleeHintActive = false;
+      controlsLocked = false;
+      gameState = 'playing';
+      clearAllInput();
+      setControlsVisible(true);
+      // チェイス中は調べる非表示を維持（updateInteractionで制御）
+    }, 2200);
+  }
+
+  function clearAllInput() {
+    joystick.active = false;
+    joystick.dx = 0;
+    joystick.dy = 0;
+    if (typeof joystickStick !== 'undefined' && joystickStick) {
+      joystickStick.style.transform = 'translate(-50%, -50%)';
+    }
+    lookTouch.active = false;
+    keys.forward = keys.back = keys.left = keys.right = false;
+    isDashing = false;
+    dashHeld = false;
+  }
+
+  function setControlsVisible(vis) {
+    const ids = ['joystick-zone', 'dash-btn', 'look-hint'];
+    for (let i = 0; i < ids.length; i++) {
+      const el = document.getElementById(ids[i]);
+      if (!el) continue;
+      if (vis && gameState === 'playing' && !controlsLocked && facePhase !== 'emerge' && facePhase !== 'caught' && !fleeHintActive) {
+        el.classList.remove('hidden');
+        el.style.pointerEvents = '';
+      } else {
         el.classList.add('hidden');
+        el.style.pointerEvents = 'none';
       }
-    }, 1800);
+    }
+    const ab = document.getElementById('action-btn');
+    if (ab && (!vis || room4Chase || facePhase === 'chase' || facePhase === 'emerge' || facePhase === 'caught' || fleeHintActive)) {
+      ab.classList.add('hidden');
+    }
   }
 
   function updateFaceCatch(dt) {
@@ -2527,9 +2652,14 @@
   }
 
   function showCaughtResult() {
+    controlsLocked = true;
+    setControlsVisible(false);
+    clearAllInput();
+    gameState = 'intro';
     const panel = document.getElementById('ending-panel');
     if (panel) {
-      document.getElementById('ending-text').textContent = '……追いつかれた。';
+      document.getElementById('ending-text').textContent =
+        '……追いつかれた。\n\nその後、彼の姿を見た者はいない。\n\n警察の記録には、ただ一行。\n「行方不明」——と、記されている。';
       document.getElementById('ending-retry').classList.remove('hidden');
       document.getElementById('ending-title').classList.remove('hidden');
       panel.classList.remove('hidden');
@@ -2539,11 +2669,14 @@
   function onEscapeSuccess() {
     room4Chase = false;
     facePhase = 'done';
+    controlsLocked = true;
+    setControlsVisible(false);
+    clearAllInput();
     gameState = 'intro';
     const panel = document.getElementById('ending-panel');
     if (panel) {
       document.getElementById('ending-text').textContent =
-        '白い光に包まれた。\n\nここを出られたのだろうか。\nそれとも、まだ廊下が続いているのだろうか。\n\n……目を閉じた。';
+        '白い光に包まれた。\n\n目を開けると、いつもの部屋の天井があった。\n枕は汗で湿っている。\n\n……夢だったのだろうか。\n\nそれとも、まだ廊下が、どこかで続いているのだろうか。';
       document.getElementById('ending-retry').classList.add('hidden');
       document.getElementById('ending-title').classList.remove('hidden');
       panel.classList.remove('hidden');
@@ -2708,11 +2841,12 @@
     door.position.set(0, doorH / 2, 0.01);
     leaf.add(door);
     // 裏側の黒遮蔽（閉じ時の白漏れ防止）
+    // 裏側のみ（プレイヤー側から見えない位置）。表の木目ドアは維持
     const doorBack = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW * 0.98, doorH * 0.98, 0.02),
-      new THREE.MeshBasicMaterial({ color: 0x000000 })
+      new THREE.BoxGeometry(doorW * 0.96, doorH * 0.96, 0.015),
+      new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.FrontSide })
     );
-    doorBack.position.set(0, doorH / 2, -0.03);
+    doorBack.position.set(0, doorH / 2, -0.045);
     leaf.add(doorBack);
 
     const panelMat = makeMat(0x3f3328, 0.8, 0.05);
@@ -2949,7 +3083,18 @@
   // MOVEMENT & COLLISION
   // ============================================================
   function updatePlayer(dt) {
-    if (vaseCinematic) return; // 花瓶演出は updateVaseCinematic がカメラを制御
+    if (vaseCinematic) return;
+    if (controlsLocked || fleeHintActive || facePhase === 'emerge' || facePhase === 'caught') {
+      // 演出中は移動しない（カメラは各演出が制御）
+      if (facePhase !== 'emerge' && facePhase !== 'caught') {
+        camera.position.copy(player.position);
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = player.yaw;
+        camera.rotation.x = player.pitch;
+        camera.rotation.z = 0;
+      }
+      return;
+    }
     if (settingsOpen || pinOpen || gameState !== 'playing' || loopInProgress) {
       camera.position.copy(player.position);
       camera.rotation.order = 'YXZ';
@@ -4175,7 +4320,8 @@
         camera.rotation.z = 0;
       }
     }
-    if (!messageOpen && !pinOpen && facePhase !== 'emerge' && facePhase !== 'caught') updateInteraction();
+    if (!messageOpen && !pinOpen && !room4Chase && facePhase === 'idle' && !fleeHintActive && !controlsLocked) updateInteraction();
+    else if (room4Chase && facePhase === 'chase' && !fleeHintActive) { currentTarget = null; if (actionBtn) actionBtn.classList.add('hidden'); }
     else {
       currentTarget = null;
       if (actionBtn) actionBtn.classList.add('hidden');
