@@ -31,19 +31,18 @@
     // 懐中電灯（SpotLight）
     // intensity は MeshStandardMaterial を照らすのに十分な値
     // distance 0 = 減衰距離制限なし（プレイ範囲では実質無限）
-    flashlightIntensity: 18,
-    flashlightDistance: 0,
-    flashlightAngle: Math.PI / 5.2,
-    flashlightPenumbra: 0.38,
-    flashlightDecay: 1.2,
+    flashlightIntensity: 9,
+    flashlightDistance: 11,
+    flashlightAngle: Math.PI / 6.5,
+    flashlightPenumbra: 0.5,
+    flashlightDecay: 1.6,
 
-    // 通常時の明るさ（設定スライダーで上書き）— 全体を暗めに
-    // スライダー 0–100 → ambient / hemi
-    defaultBrightness: 22,
-    ambientMin: 0.008,
-    ambientMax: 0.24,
-    hemiMin: 0.006,
-    hemiMax: 0.14,
+    // 通常時の明るさ（設定スライダーで上書き）— さらに暗く
+    defaultBrightness: 16,
+    ambientMin: 0.005,
+    ambientMax: 0.18,
+    hemiMin: 0.004,
+    hemiMax: 0.1,
 
     // 感度スライダー初期値（50＝従来どおり）
     defaultLookSens: 50,
@@ -161,13 +160,20 @@
   let room4Unlocked = false;
   let room4Entered = false;
   let room4Chase = false;
-  let room4Face = null;
+  let room4Face = null; // 独立オブジェクト（部屋とは別）
   let room4Group = null;
   let room4DoorState = null;
   let escapeExitMesh = null;
-  let chaseFaceSpeed = 2.4;
+  let chaseFaceSpeed = 3.2;
   let chapterAnnounced = {};
-  let retryCheckpoint = null; // Room4 扉前リトライ用
+  let retryCheckpoint = null;
+  // 顔チェイス段階: idle | emerge | chase | caught
+  let facePhase = 'idle';
+  let faceEmergeT = 0;
+  let faceStartPos = new THREE.Vector3();
+  let faceCaught = false;
+  let faceCatchT = 0;
+  let room4Origin = new THREE.Vector3(); // 部屋固定座標
   // 花瓶演出
   let vaseCinematic = false;
   let vaseCinePhase = 0;
@@ -1977,31 +1983,25 @@
     paper.position.set(0.3, 0.84, 0);
     room4Group.add(paper);
 
-    // 巨大な顔（奥壁に埋め込み立体）
-    const face = new THREE.Group();
-    face.position.set(hd - 0.35, 1.5, 0);
-    face.rotation.y = -Math.PI / 2;
-    const skin = new THREE.MeshStandardMaterial({
-      color: 0xd4c8b8, roughness: 0.7, metalness: 0.05
+    // 巨大な顔：添付画像のビルボード（部屋の子にしない・独立オブジェクト）
+    room4Origin.set(roomX, 0, roomZ);
+    const faceTex = new THREE.TextureLoader().load('face.jpg');
+    if (THREE.SRGBColorSpace !== undefined) faceTex.colorSpace = THREE.SRGBColorSpace;
+    const faceMat = new THREE.MeshBasicMaterial({
+      map: faceTex,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: true
     });
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.95, 20, 16), skin);
-    head.scale.set(1, 1.15, 0.55);
-    face.add(head);
-    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1814, roughness: 0.4 });
-    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), eyeMat);
-    eyeL.position.set(-0.32, 0.2, 0.4);
-    face.add(eyeL);
-    const eyeR = eyeL.clone();
-    eyeR.position.x = 0.32;
-    face.add(eyeR);
-    const mouth = new THREE.Mesh(
-      new THREE.BoxGeometry(0.45, 0.06, 0.15),
-      new THREE.MeshStandardMaterial({ color: 0x3a2820, roughness: 0.6 })
-    );
-    mouth.position.set(0, -0.35, 0.42);
-    face.add(mouth);
-    room4Group.add(face);
-    room4Face = face;
+    // 縦横比を保った平面（約 1.6m 高）
+    const faceMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 1.6), faceMat);
+    faceMesh.position.set(roomX + hd - 0.2, 1.55, roomZ);
+    faceMesh.visible = false; // チェイス開始まで非表示
+    scene.add(faceMesh);
+    room4Face = faceMesh;
+    faceStartPos.copy(faceMesh.position);
+    facePhase = 'idle';
+    faceCaught = false;
 
     scene.add(room4Group);
 
@@ -2069,16 +2069,17 @@
   }
 
   function startRoom4FaceEvent() {
-    if (room4Chase || !room4Face) return;
-    // 短い間の後、顔が剥がれて迫る
+    if (facePhase !== 'idle' || !room4Face) return;
+    facePhase = 'emerge';
+    faceEmergeT = 0;
+    faceCaught = false;
+    room4Face.visible = true;
+    room4Face.scale.set(0.3, 0.3, 0.3);
+    room4Face.position.copy(faceStartPos);
+    // カメラを奥壁方向へ寄せる演出用に操作ロック
     gameState = 'intro';
-    setTimeout(function () {
-      room4Chase = true;
-      gameState = 'playing';
-      // 出口を廊下奥に出現
-      spawnEscapeExit();
-      showMessage('逃げろ。');
-    }, 900);
+    joystick.active = false;
+    lookTouch.active = false;
   }
 
   function spawnEscapeExit() {
@@ -2098,25 +2099,77 @@
     escapeExitMesh = group;
   }
 
+  function faceLookAtPlayer() {
+    if (!room4Face) return;
+    // Y軸ビルボード：プレイヤー方向を向く（上下は固定）
+    const dx = player.position.x - room4Face.position.x;
+    const dz = player.position.z - room4Face.position.z;
+    room4Face.rotation.y = Math.atan2(dx, dz);
+  }
+
   function updateRoom4Chase(dt) {
-    if (!room4Chase || !room4Face || !room4Group) return;
-    // 顔がプレイヤー方向へせり出す
-    const faceWorld = new THREE.Vector3();
-    room4Face.getWorldPosition(faceWorld);
-    const toPlayer = player.position.clone().sub(faceWorld);
-    toPlayer.y = 0;
-    const dist = toPlayer.length();
-    if (dist > 0.3) {
-      toPlayer.normalize();
-      // ローカル空間で前へ押し出す＋ワールド追従
-      room4Face.position.z += 0.8 * dt;
-      const move = toPlayer.multiplyScalar(chaseFaceSpeed * dt);
-      room4Group.position.x += move.x * 0.35;
-      room4Group.position.z += move.z * 0.35;
+    if (!room4Face) return;
+    // 部屋は絶対に動かさない
+    if (room4Group) room4Group.position.copy(room4Origin);
+
+    if (facePhase === 'emerge') {
+      faceEmergeT += dt;
+      const t = Math.min(1, faceEmergeT / 1.4);
+      // 壁からせり出し
+      const s = 0.3 + t * 0.7;
+      room4Face.scale.set(s, s, s);
+      // 奥壁から廊下側（-X）へ押し出す
+      room4Face.position.x = faceStartPos.x - t * 1.8;
+      room4Face.position.y = faceStartPos.y;
+      room4Face.position.z = faceStartPos.z;
+      faceLookAtPlayer();
+      // カメラを顔方向へ少し寄せる
+      const lookDx = room4Face.position.x - player.position.x;
+      const lookDz = room4Face.position.z - player.position.z;
+      player.yaw = Math.atan2(-lookDx, -lookDz);
+      player.pitch = -0.08;
+      camera.position.copy(player.position);
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      camera.rotation.z = 0;
+      if (t >= 1) {
+        facePhase = 'chase';
+        room4Chase = true;
+        gameState = 'playing';
+        spawnEscapeExit();
+        showMessage('逃げろ。');
+      }
+      return;
     }
-    // 接触判定
-    room4Face.getWorldPosition(faceWorld);
-    if (faceWorld.distanceTo(player.position) < 1.1) {
+
+    if (facePhase === 'caught') {
+      updateFaceCatch(dt);
+      return;
+    }
+
+    if (facePhase !== 'chase' || !room4Chase) return;
+
+    // 追跡：顔オブジェクトのみ移動
+    const toPlayer = new THREE.Vector3(
+      player.position.x - room4Face.position.x,
+      0,
+      player.position.z - room4Face.position.z
+    );
+    const dist = toPlayer.length();
+    if (dist > 0.15) {
+      toPlayer.normalize();
+      room4Face.position.x += toPlayer.x * chaseFaceSpeed * dt;
+      room4Face.position.z += toPlayer.z * chaseFaceSpeed * dt;
+      room4Face.position.y = 1.55;
+    }
+    faceLookAtPlayer();
+
+    // 捕獲
+    const catchDist = room4Face.position.distanceTo(
+      new THREE.Vector3(player.position.x, 1.55, player.position.z)
+    );
+    if (catchDist < 1.15 && !faceCaught) {
       onCaughtByFace();
       return;
     }
@@ -2126,9 +2179,56 @@
     }
   }
 
+  function updateFaceCatch(dt) {
+    if (!room4Face) return;
+    faceCatchT += dt;
+    const t = Math.min(1, faceCatchT / 1.15);
+    const ease = t * t * t;
+
+    // 顔をカメラ前方へ迫らせる
+    const fwdX = -Math.sin(player.yaw);
+    const fwdZ = -Math.cos(player.yaw);
+    const dist = 2.0 - ease * 1.75;
+    room4Face.position.set(
+      player.position.x + fwdX * dist,
+      1.55,
+      player.position.z + fwdZ * dist
+    );
+    const sc = 1 + ease * 2.0;
+    room4Face.scale.set(sc, sc, sc);
+    faceLookAtPlayer();
+
+    camera.position.copy(player.position);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = 0;
+    camera.rotation.z = 0;
+
+    if (t >= 1) {
+      const fade = document.getElementById('fade-overlay');
+      if (fade) {
+        fade.classList.remove('hidden');
+        fade.classList.add('active');
+      }
+      setTimeout(function () {
+        showCaughtResult();
+      }, 650);
+      facePhase = 'done';
+    }
+  }
+
   function onCaughtByFace() {
+    if (faceCaught) return;
+    faceCaught = true;
     room4Chase = false;
+    facePhase = 'caught';
+    faceCatchT = 0;
     gameState = 'intro';
+    joystick.active = false;
+    lookTouch.active = false;
+  }
+
+  function showCaughtResult() {
     const panel = document.getElementById('ending-panel');
     if (panel) {
       document.getElementById('ending-text').textContent = '……追いつかれた。';
@@ -2140,6 +2240,7 @@
 
   function onEscapeSuccess() {
     room4Chase = false;
+    facePhase = 'done';
     gameState = 'intro';
     const panel = document.getElementById('ending-panel');
     if (panel) {
@@ -2154,23 +2255,28 @@
   function retryFromRoom4() {
     const panel = document.getElementById('ending-panel');
     if (panel) panel.classList.add('hidden');
+    const fade = document.getElementById('fade-overlay');
+    if (fade) {
+      fade.classList.remove('active');
+      fade.classList.add('hidden');
+    }
     room4Chase = false;
+    facePhase = 'idle';
+    faceCaught = false;
     hasKey = true;
     room4DoorSpawned = true;
     room4Unlocked = true;
     keyAwaitingDoorPass = false;
-    // 顔・部屋を初期位置付近へ
-    if (room4Group) {
-      const z = 22.5;
-      const x = CONFIG.corridorWidth / 2 - 0.06 + 3.2;
-      room4Group.position.set(x, 0, z);
+    if (room4Group) room4Group.position.copy(room4Origin);
+    if (room4Face) {
+      room4Face.visible = false;
+      room4Face.position.copy(faceStartPos);
+      room4Face.scale.set(1, 1, 1);
     }
-    if (room4Face) room4Face.position.set(0, 1.5, -2.35);
     if (escapeExitMesh) {
       scene.remove(escapeExitMesh);
       escapeExitMesh = null;
     }
-    // Room4 扉前へ
     player.position.set(CONFIG.corridorWidth / 2 - 1.2, CONFIG.eyeHeight, 22.5);
     player.yaw = -Math.PI / 2;
     player.pitch = 0;
@@ -2625,28 +2731,46 @@
     // 歩行／走行の頭の上下動（プレイヤー位置・衝突には影響しない）
     isMoving = len > 0.05;
     if (isMoving) {
-      const bobSpeed = isDashing ? 11.5 : 7.2;
+      let bobSpeed = isDashing ? 11.5 : 7.2;
+      let amp = isDashing ? 0.028 : 0.016;
+      // チェイス中は揺れを強化
+      if (room4Chase && facePhase === 'chase') {
+        bobSpeed = isDashing ? 16 : 12;
+        amp = isDashing ? 0.055 : 0.04;
+        // 顔が近いほど強め
+        if (room4Face) {
+          const fd = room4Face.position.distanceTo(player.position);
+          if (fd < 5) amp += (5 - fd) * 0.008;
+        }
+      }
       headBobTime += dt * bobSpeed;
-      const amp = isDashing ? 0.028 : 0.016;
-      headBobAmount += ((amp) - headBobAmount) * Math.min(1, dt * 8);
+      headBobAmount += (amp - headBobAmount) * Math.min(1, dt * 8);
     } else {
-      headBobAmount *= Math.pow(0.02, dt); // 自然に減衰
+      headBobAmount *= Math.pow(0.02, dt);
       if (headBobAmount < 0.0005) {
         headBobAmount = 0;
         headBobTime = 0;
       }
     }
-    const bobOffset = Math.sin(headBobTime) * headBobAmount;
+    const bobY = Math.sin(headBobTime) * headBobAmount;
+    let bobX = 0;
+    let bobZ = 0;
+    if (room4Chase && facePhase === 'chase' && isMoving) {
+      bobX = Math.sin(headBobTime * 0.7 + 1.2) * headBobAmount * 0.45;
+      bobZ = Math.cos(headBobTime * 0.55) * headBobAmount * 0.25;
+    }
 
     camera.position.set(
-      player.position.x,
-      player.position.y + bobOffset,
-      player.position.z
+      player.position.x + bobX,
+      player.position.y + bobY,
+      player.position.z + bobZ
     );
     camera.rotation.order = 'YXZ';
     camera.rotation.y = player.yaw;
     camera.rotation.x = player.pitch;
-    camera.rotation.z = 0;
+    camera.rotation.z = (room4Chase && facePhase === 'chase')
+      ? Math.sin(headBobTime * 0.5) * headBobAmount * 0.8
+      : 0;
 
     updateHandBob(dt);
   }
