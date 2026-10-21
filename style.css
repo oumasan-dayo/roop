@@ -740,3 +740,44 @@ body.state-intro #stamina-wrap {
   color: #a09888;
   font-size: 14px;
 }
+
+#ending-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  background: rgba(4, 3, 2, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+#ending-panel.hidden { display: none; }
+#ending-card {
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+}
+#ending-text {
+  color: #e4dccf;
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: 0.06em;
+  white-space: pre-wrap;
+  margin-bottom: 24px;
+}
+#ending-retry, #ending-title {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.08);
+  color: #ebe4d8;
+  font-size: 15px;
+}
+#ending-retry.hidden { display: none; }
+#ending-title {
+  background: transparent;
+  color: #a09888;
+}

@@ -31,19 +31,19 @@
     // 懐中電灯（SpotLight）
     // intensity は MeshStandardMaterial を照らすのに十分な値
     // distance 0 = 減衰距離制限なし（プレイ範囲では実質無限）
-    flashlightIntensity: 16,
+    flashlightIntensity: 18,
     flashlightDistance: 0,
     flashlightAngle: Math.PI / 5.2,
-    flashlightPenumbra: 0.4,
-    flashlightDecay: 1.15,
+    flashlightPenumbra: 0.38,
+    flashlightDecay: 1.2,
 
     // 通常時の明るさ（設定スライダーで上書き）— 全体を暗めに
     // スライダー 0–100 → ambient / hemi
-    defaultBrightness: 38,
-    ambientMin: 0.02,
-    ambientMax: 0.42,
-    hemiMin: 0.015,
-    hemiMax: 0.28,
+    defaultBrightness: 28,
+    ambientMin: 0.012,
+    ambientMax: 0.32,
+    hemiMin: 0.01,
+    hemiMax: 0.2,
 
     // 感度スライダー初期値（50＝従来どおり）
     defaultLookSens: 50,
@@ -150,6 +150,24 @@
   let paintingCenterGroup = null;
   let anomalyRoot = null;
   let sharedWallMat = null; // ドア周辺と共通の壁マテリアル
+  // 懐中電灯故障しかけ
+  let flickerTimer = 0;
+  let flickerNext = 4 + Math.random() * 8;
+  let flickerMul = 1;
+  let baseFlashIntensity = 18;
+  // Room 4
+  let keyAwaitingDoorPass = false;
+  let room4DoorSpawned = false;
+  let room4Unlocked = false;
+  let room4Entered = false;
+  let room4Chase = false;
+  let room4Face = null;
+  let room4Group = null;
+  let room4DoorState = null;
+  let escapeExitMesh = null;
+  let chaseFaceSpeed = 2.4;
+  let chapterAnnounced = {};
+  let retryCheckpoint = null; // Room4 扉前リトライ用
   // 花瓶演出
   let vaseCinematic = false;
   let vaseCinePhase = 0;
@@ -235,6 +253,7 @@
       setupTitleUI();
       setupDashUI();
       setupPinUI();
+      setupEndingUI();
       showTitleScreen();
       animate();
 
@@ -626,38 +645,44 @@
 
   /** 壁紙／古い塗装 */
   function createWallTexture(size) {
+    // タイル可能な壁紙：縦横とも連続し、向きの食い違いが出にくい
     size = size || 256;
     const c = document.createElement('canvas');
     c.width = size;
     c.height = size;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#a89880';
+    ctx.fillStyle = '#a09078';
     ctx.fillRect(0, 0, size, size);
-    // ノイズ
+    // 決定論的ノイズ（乱数に頼らずタイル境界が揃う）
     const img = ctx.getImageData(0, 0, size, size);
-    for (let i = 0; i < img.data.length; i += 4) {
-      const n = (Math.random() - 0.5) * 28;
-      img.data[i] = Math.max(0, Math.min(255, img.data[i] + n));
-      img.data[i + 1] = Math.max(0, Math.min(255, img.data[i + 1] + n * 0.9));
-      img.data[i + 2] = Math.max(0, Math.min(255, img.data[i + 2] + n * 0.7));
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const n =
+          Math.sin(x * 0.11 + y * 0.07) * 8 +
+          Math.sin(x * 0.31 - y * 0.19) * 5 +
+          Math.sin((x + y) * 0.05) * 6;
+        img.data[i] = Math.max(0, Math.min(255, 160 + n));
+        img.data[i + 1] = Math.max(0, Math.min(255, 144 + n * 0.9));
+        img.data[i + 2] = Math.max(0, Math.min(255, 120 + n * 0.7));
+        img.data[i + 3] = 255;
+      }
     }
     ctx.putImageData(img, 0, 0);
-    // 縦の染み
-    for (let i = 0; i < 8; i++) {
-      const x = Math.random() * size;
-      const grd = ctx.createLinearGradient(x, 0, x, size);
-      grd.addColorStop(0, 'rgba(80,70,55,0)');
-      grd.addColorStop(0.4, 'rgba(70,60,45,0.12)');
-      grd.addColorStop(1, 'rgba(50,40,30,0.18)');
-      ctx.fillStyle = grd;
-      ctx.fillRect(x, 0, 8 + Math.random() * 20, size);
-    }
-    // 細かい模様
-    ctx.strokeStyle = 'rgba(90,80,65,0.06)';
-    for (let y = 0; y < size; y += 16) {
+    // 横方向の紙目（上下で向きが変わらない）
+    ctx.strokeStyle = 'rgba(70,60,48,0.07)';
+    for (let y = 0; y < size; y += 12) {
       ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(size, y);
+      ctx.moveTo(0, y + 0.5);
+      ctx.lineTo(size, y + 0.5);
+      ctx.stroke();
+    }
+    // ごく薄い縦線（均等間隔・タイル可）
+    ctx.strokeStyle = 'rgba(60,50,40,0.05)';
+    for (let x = 0; x < size; x += 32) {
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, size);
       ctx.stroke();
     }
     const tex = new THREE.CanvasTexture(c);
@@ -973,7 +998,8 @@
 
     // ---- 衝突判定 ----
     addCollider(-halfW - wallThick, 0, -1, wallThick, H, L + extLen + 2);
-    addCollider(halfW, 0, -1, wallThick, H, L + extLen + 2);
+    // 右壁は後から Room4 開口用に分割できるよう参照を保持
+    window._rightWallCol = addCollider(halfW, 0, -1, wallThick, H, L + extLen + 2);
 
     // 入口：開口左右の壁は常時衝突。中央はドア用コリジョンで塞ぐ
     if (sideW > 0.05) {
@@ -1557,21 +1583,24 @@
 
     if (storyStage === 1 && loopCount >= 2) {
       storyStage = 2;
-      ensureAnomalyLevel(1); // 2週目：薄い異変
+      ensureAnomalyLevel(1);
+      announceChapterChange(2);
     }
     if (storyStage === 2 && loopCount >= 3) {
       storyStage = 3;
-      ensureAnomalyLevel(2); // 3週目：増やす
+      ensureAnomalyLevel(2);
+      announceChapterChange(3);
     }
-    // 暗号成功後の次ループでステージ4（日記・金庫）
     if (puzzleSolved && storyStage === 3) {
       storyStage = 4;
       ensureAnomalyLevel(3);
       if (!loop4Spawned) spawnLoop4Events();
+      announceChapterChange(4);
     }
     if (storyStage >= 4 && hasKey && anomalyLevel < 4) {
       storyStage = 5;
       ensureAnomalyLevel(4);
+      announceChapterChange(5);
     }
   }
 
@@ -1722,9 +1751,9 @@
     if (messageNextMode === 'safe_key' && !hasKey) {
       hasKey = true;
       safeState = 'done';
+      keyAwaitingDoorPass = true; // 次の通常ドア通過で Room4 扉出現
       messageNextMode = null;
       if (keyObject) keyObject.visible = false;
-      // 通常の閉じるUIに戻して鍵入手メッセージ
       const closeBtn = document.getElementById('message-close');
       const nextBtn = document.getElementById('message-next');
       if (closeBtn) closeBtn.classList.remove('hidden');
@@ -1734,8 +1763,367 @@
       messagePanel.classList.remove('hidden');
       return;
     }
+    if (messageNextMode === 'room4_desk') {
+      messageNextMode = null;
+      closeMessage();
+      startRoom4FaceEvent();
+      return;
+    }
     messageNextMode = null;
     closeMessage();
+  }
+
+  /** 章進行アナウンス（同じ段階では一度だけ） */
+  function announceChapterChange(stage) {
+    if (chapterAnnounced[stage]) return;
+    chapterAnnounced[stage] = true;
+    queueMessages(['何かが変わったようだ……']);
+  }
+
+  function spawnRoom4Door() {
+    if (room4DoorSpawned) return;
+    room4DoorSpawned = true;
+    // 右壁側・廊下中盤に扉を埋め込み
+    const z = 22.5;
+    const x = CONFIG.corridorWidth / 2 - 0.06;
+    const group = new THREE.Group();
+    group.position.set(x, 0, z);
+    group.rotation.y = -Math.PI / 2;
+
+    const frameMat = makeMat(0x3a3028, 0.75, 0.1);
+    const doorMat = makeMat(0x4a3c30, 0.78, 0.08);
+    const doorW = 0.95;
+    const doorH = 2.1;
+    const frameThick = 0.07;
+    const topFrame = new THREE.Mesh(new THREE.BoxGeometry(doorW + frameThick * 2, frameThick, 0.1), frameMat);
+    topFrame.position.set(0, doorH + frameThick / 2, 0);
+    group.add(topFrame);
+    const lf = new THREE.Mesh(new THREE.BoxGeometry(frameThick, doorH, 0.1), frameMat);
+    lf.position.set(-(doorW / 2 + frameThick / 2), doorH / 2, 0);
+    group.add(lf);
+    const rf = new THREE.Mesh(new THREE.BoxGeometry(frameThick, doorH, 0.1), frameMat);
+    rf.position.set(doorW / 2 + frameThick / 2, doorH / 2, 0);
+    group.add(rf);
+
+    const pivot = new THREE.Group();
+    pivot.position.set(-doorW / 2, 0, 0);
+    group.add(pivot);
+    const leaf = new THREE.Group();
+    leaf.position.set(doorW / 2, 0, 0);
+    pivot.add(leaf);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.05), doorMat);
+    door.position.set(0, doorH / 2, 0.01);
+    leaf.add(door);
+    const handle = new THREE.Mesh(
+      new THREE.BoxGeometry(0.03, 0.1, 0.06),
+      makeMat(0x8a7a60, 0.4, 0.6)
+    );
+    handle.position.set(0.35, 1.0, 0.06);
+    leaf.add(handle);
+    scene.add(group);
+
+    const col = addCollider(x - 0.2, 0, z - 0.55, 0.4, 2.3, 1.1);
+    room4DoorState = {
+      pivot: pivot,
+      collider: col,
+      open: false,
+      animating: false,
+      angle: 0,
+      targetAngle: -Math.PI * 0.7
+    };
+    registerInteractable({
+      id: 'door_room4',
+      kind: 'room4door',
+      label: '調べる',
+      message: '',
+      position: new THREE.Vector3(x - 0.4, 1.2, z),
+      radius: 2.0,
+      hx: 0.6, hy: 2.2, hz: 0.8
+    });
+    buildRoom4Interior(x, z);
+    announceChapterChange(6);
+  }
+
+  function buildRoom4Interior(doorX, doorZ) {
+    if (room4Group) return;
+    room4Group = new THREE.Group();
+    const roomX = doorX + 3.2;
+    const roomZ = doorZ;
+    room4Group.position.set(roomX, 0, roomZ);
+
+    const whiteMat = new THREE.MeshStandardMaterial({
+      color: 0xe8e4dc, roughness: 0.88, metalness: 0.02
+    });
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0xd8d4cc, roughness: 0.75, metalness: 0.05
+    });
+    // 床・天井・壁（白基調・不気味）
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.05, 5.5), floorMat);
+    floor.position.y = 0.02;
+    room4Group.add(floor);
+    const ceil = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.05, 5.5), whiteMat);
+    ceil.position.y = 2.7;
+    room4Group.add(ceil);
+    // 壁
+    const walls = [
+      [0, 1.35, -2.7, 5.5, 2.7, 0.1],
+      [0, 1.35, 2.7, 5.5, 2.7, 0.1],
+      [2.7, 1.35, 0, 0.1, 2.7, 5.5],
+      [-2.7, 1.35, 0, 0.1, 2.7, 5.5]
+    ];
+    walls.forEach(function (w) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w[3], w[4], w[5]), whiteMat);
+      m.position.set(w[0], w[1], w[2]);
+      room4Group.add(m);
+    });
+    // 弱い室内光
+    const roomLight = new THREE.PointLight(0xf0ece4, 0.55, 8, 2);
+    roomLight.position.set(0, 2.2, 0);
+    room4Group.add(roomLight);
+
+    // 中央の机
+    const desk = new THREE.Mesh(
+      new THREE.BoxGeometry(1.4, 0.08, 0.7),
+      new THREE.MeshStandardMaterial({ color: 0xc8c0b0, roughness: 0.6 })
+    );
+    desk.position.set(0, 0.78, 0.3);
+    room4Group.add(desk);
+    const legMat = new THREE.MeshStandardMaterial({ color: 0xb0a898, roughness: 0.7 });
+    [[-0.6, -0.25], [0.6, -0.25], [-0.6, 0.25], [0.6, 0.25]].forEach(function (p) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.74, 0.06), legMat);
+      leg.position.set(p[0], 0.37, p[1] + 0.3);
+      room4Group.add(leg);
+    });
+    // 机上メッセージ
+    const paper = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.01, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0xf5f0e0, roughness: 0.9 })
+    );
+    paper.position.set(0, 0.84, 0.3);
+    room4Group.add(paper);
+
+    // 巨大な顔（奥壁から立体）
+    const face = new THREE.Group();
+    face.position.set(0, 1.5, -2.35);
+    const skin = new THREE.MeshStandardMaterial({
+      color: 0xd4c8b8, roughness: 0.7, metalness: 0.05
+    });
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.95, 20, 16), skin);
+    head.scale.set(1, 1.15, 0.55);
+    face.add(head);
+    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1a1814, roughness: 0.4 });
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), eyeMat);
+    eyeL.position.set(-0.32, 0.2, 0.4);
+    face.add(eyeL);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.32;
+    face.add(eyeR);
+    const mouth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.06, 0.15),
+      new THREE.MeshStandardMaterial({ color: 0x3a2820, roughness: 0.6 })
+    );
+    mouth.position.set(0, -0.35, 0.42);
+    face.add(mouth);
+    room4Group.add(face);
+    room4Face = face;
+
+    scene.add(room4Group);
+    // 部屋のコリジョン（簡易）
+    addCollider(roomX - 2.8, 0, roomZ - 2.8, 5.6, 2.7, 0.2);
+    addCollider(roomX - 2.8, 0, roomZ + 2.6, 5.6, 2.7, 0.2);
+    addCollider(roomX + 2.6, 0, roomZ - 2.8, 0.2, 2.7, 5.6);
+    addCollider(roomX - 2.8, 0, roomZ - 2.8, 0.2, 2.7, 5.6);
+
+    registerInteractable({
+      id: 'room4_desk',
+      kind: 'room4desk',
+      label: '調べる',
+      message: '',
+      position: new THREE.Vector3(roomX, 1.0, roomZ + 0.3),
+      radius: 2.2,
+      hx: 0.9, hy: 0.8, hz: 0.6
+    });
+  }
+
+  function tryOpenRoom4Door() {
+    if (!room4DoorState || room4DoorState.open || room4DoorState.animating) return;
+    if (!hasKey) {
+      showMessage('鍵が必要だ。');
+      return;
+    }
+    room4DoorState.animating = true;
+    room4Unlocked = true;
+    retryCheckpoint = {
+      hasKey: true,
+      room4DoorSpawned: true,
+      room4Unlocked: true
+    };
+  }
+
+  function updateRoom4Door(dt) {
+    if (!room4DoorState || !room4DoorState.animating) return;
+    const target = room4DoorState.targetAngle;
+    const cur = room4DoorState.angle;
+    const next = cur + (target - cur) * Math.min(1, dt * 2.5);
+    if (Math.abs(target - next) < 0.02) {
+      room4DoorState.angle = target;
+      room4DoorState.animating = false;
+      room4DoorState.open = true;
+      if (room4DoorState.collider) room4DoorState.collider.active = false;
+      // 右壁の全面コリジョンを、開口を除く2本に差し替え
+      if (window._rightWallCol) window._rightWallCol.active = false;
+      const halfW = CONFIG.corridorWidth / 2;
+      const zDoor = 22.5;
+      const gap = 0.7;
+      addCollider(halfW, 0, -1, 0.15, CONFIG.corridorHeight, zDoor - gap + 1);
+      addCollider(halfW, 0, zDoor + gap, 0.15, CONFIG.corridorHeight, CONFIG.corridorLength - zDoor);
+      for (let i = 0; i < interactables.length; i++) {
+        if (interactables[i].id === 'door_room4') interactables[i].radius = 0;
+      }
+    } else {
+      room4DoorState.angle = next;
+    }
+    room4DoorState.pivot.rotation.y = room4DoorState.angle;
+  }
+
+  function startRoom4FaceEvent() {
+    if (room4Chase || !room4Face) return;
+    // 短い間の後、顔が剥がれて迫る
+    gameState = 'intro';
+    setTimeout(function () {
+      room4Chase = true;
+      gameState = 'playing';
+      // 出口を廊下奥に出現
+      spawnEscapeExit();
+      showMessage('逃げろ。');
+    }, 900);
+  }
+
+  function spawnEscapeExit() {
+    if (escapeExitMesh) return;
+    const z = CONFIG.corridorLength - 1.5;
+    const group = new THREE.Group();
+    group.position.set(0, 1.2, z);
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.4, 2.4),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 })
+    );
+    group.add(glow);
+    const light = new THREE.PointLight(0xffffff, 2.5, 6, 1.5);
+    light.position.set(0, 0, -0.5);
+    group.add(light);
+    scene.add(group);
+    escapeExitMesh = group;
+  }
+
+  function updateRoom4Chase(dt) {
+    if (!room4Chase || !room4Face || !room4Group) return;
+    // 顔がプレイヤー方向へせり出す
+    const faceWorld = new THREE.Vector3();
+    room4Face.getWorldPosition(faceWorld);
+    const toPlayer = player.position.clone().sub(faceWorld);
+    toPlayer.y = 0;
+    const dist = toPlayer.length();
+    if (dist > 0.3) {
+      toPlayer.normalize();
+      // ローカル空間で前へ押し出す＋ワールド追従
+      room4Face.position.z += 0.8 * dt;
+      const move = toPlayer.multiplyScalar(chaseFaceSpeed * dt);
+      room4Group.position.x += move.x * 0.35;
+      room4Group.position.z += move.z * 0.35;
+    }
+    // 接触判定
+    room4Face.getWorldPosition(faceWorld);
+    if (faceWorld.distanceTo(player.position) < 1.1) {
+      onCaughtByFace();
+      return;
+    }
+    // 出口通過
+    if (escapeExitMesh && player.position.z > CONFIG.corridorLength - 0.8 && Math.abs(player.position.x) < 0.7) {
+      onEscapeSuccess();
+    }
+  }
+
+  function onCaughtByFace() {
+    room4Chase = false;
+    gameState = 'intro';
+    const panel = document.getElementById('ending-panel');
+    if (panel) {
+      document.getElementById('ending-text').textContent = '……追いつかれた。';
+      document.getElementById('ending-retry').classList.remove('hidden');
+      document.getElementById('ending-title').classList.remove('hidden');
+      panel.classList.remove('hidden');
+    }
+  }
+
+  function onEscapeSuccess() {
+    room4Chase = false;
+    gameState = 'intro';
+    const panel = document.getElementById('ending-panel');
+    if (panel) {
+      document.getElementById('ending-text').textContent =
+        '白い光に包まれた。\n\nここを出られたのだろうか。\nそれとも、まだ廊下が続いているのだろうか。\n\n……目を閉じた。';
+      document.getElementById('ending-retry').classList.add('hidden');
+      document.getElementById('ending-title').classList.remove('hidden');
+      panel.classList.remove('hidden');
+    }
+  }
+
+  function retryFromRoom4() {
+    const panel = document.getElementById('ending-panel');
+    if (panel) panel.classList.add('hidden');
+    room4Chase = false;
+    hasKey = true;
+    room4DoorSpawned = true;
+    room4Unlocked = true;
+    keyAwaitingDoorPass = false;
+    // 顔・部屋を初期位置付近へ
+    if (room4Group) {
+      const z = 22.5;
+      const x = CONFIG.corridorWidth / 2 - 0.06 + 3.2;
+      room4Group.position.set(x, 0, z);
+    }
+    if (room4Face) room4Face.position.set(0, 1.5, -2.35);
+    if (escapeExitMesh) {
+      scene.remove(escapeExitMesh);
+      escapeExitMesh = null;
+    }
+    // Room4 扉前へ
+    player.position.set(CONFIG.corridorWidth / 2 - 1.2, CONFIG.eyeHeight, 22.5);
+    player.yaw = -Math.PI / 2;
+    player.pitch = 0;
+    camera.position.copy(player.position);
+    if (room4DoorState) {
+      room4DoorState.open = true;
+      room4DoorState.animating = false;
+      room4DoorState.angle = room4DoorState.targetAngle;
+      if (room4DoorState.pivot) room4DoorState.pivot.rotation.y = room4DoorState.angle;
+      if (room4DoorState.collider) room4DoorState.collider.active = false;
+    }
+    gameState = 'playing';
+  }
+
+  function setupEndingUI() {
+    const retry = document.getElementById('ending-retry');
+    const toTitle = document.getElementById('ending-title');
+    if (retry) {
+      const h = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        retryFromRoom4();
+      };
+      retry.addEventListener('click', h);
+      retry.addEventListener('touchend', h, { passive: false });
+    }
+    if (toTitle) {
+      const h2 = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        location.reload();
+      };
+      toTitle.addEventListener('click', h2);
+      toTitle.addEventListener('touchend', h2, { passive: false });
+    }
   }
 
   function setupPinUI() {
@@ -2134,7 +2522,10 @@
     const backOpen = backDoorState && backDoorState.open;
     const zMax = frontOpen ? playBounds.zMaxOpen : playBounds.zMaxClosed;
     const zMin = backOpen ? playBounds.zMinOpen : playBounds.zMin;
-    newPos.x = Math.max(-halfW + margin, Math.min(halfW - margin, newPos.x));
+    // Room4 開放時は右方向に部屋へ入れる
+    let xMax = halfW - margin;
+    if (room4DoorState && room4DoorState.open) xMax = halfW + 5.2;
+    newPos.x = Math.max(-halfW + margin, Math.min(xMax, newPos.x));
     newPos.z = Math.max(zMin, Math.min(zMax, newPos.z));
     newPos.y = CONFIG.eyeHeight;
 
@@ -2476,6 +2867,11 @@
         }
         // ストーリー段階の更新（異変は loopCount ではなく story に連動）
         updateStoryOnLoop();
+        // 鍵入手後の「次の通常ドア通過」で Room4 扉出現
+        if (keyAwaitingDoorPass && !room4DoorSpawned) {
+          keyAwaitingDoorPass = false;
+          spawnRoom4Door();
+        }
       }, 400);
     }, 500);
   }
@@ -2969,6 +3365,17 @@
       if (safeState === 'code') openPinUI();
       return;
     }
+    if (currentTarget.kind === 'room4door') {
+      tryOpenRoom4Door();
+      return;
+    }
+    if (currentTarget.kind === 'room4desk') {
+      showMessageWithNext(
+        '出口は廊下の奥にある。\n光の向こうへ走れ。\n振り返るな。',
+        'room4_desk'
+      );
+      return;
+    }
     if (currentTarget.kind === 'diary') {
       showDiaryMessage();
       return;
@@ -3193,24 +3600,58 @@
       updatePlayer(dt);
       updateDoorAnimation(dt);
       updateBackDoorAnimation(dt);
+      updateRoom4Door(dt);
       updateVaseEvent(dt);
       updateVaseDebris(dt);
-      checkLoopTrigger();
+      updateRoom4Chase(dt);
+      if (!room4Chase) checkLoopTrigger();
+      updateFlashlightFlicker(dt);
     } else {
-      // 調査中はカメラ位置だけ維持
       camera.position.copy(player.position);
       camera.rotation.order = 'YXZ';
       camera.rotation.y = player.yaw;
       camera.rotation.x = player.pitch;
       camera.rotation.z = 0;
     }
-    if (!messageOpen && !pinOpen) updateInteraction();
+    if (!messageOpen && !pinOpen && !room4Chase) updateInteraction();
     else {
       currentTarget = null;
       if (actionBtn) actionBtn.classList.add('hidden');
     }
     syncFlashlightBeam();
     renderer.render(scene, camera);
+  }
+
+  function updateFlashlightFlicker(dt) {
+    if (!flashlight) return;
+    if (baseFlashIntensity < 1) baseFlashIntensity = CONFIG.flashlightIntensity;
+    flickerTimer += dt;
+    // 不規則な間隔で短い減光
+    if (flickerTimer >= flickerNext) {
+      flickerTimer = 0;
+      const roll = Math.random();
+      if (roll < 0.55) {
+        // 軽い弱まり
+        flickerMul = 0.55 + Math.random() * 0.25;
+        flickerNext = 0.08 + Math.random() * 0.12;
+      } else if (roll < 0.85) {
+        // 短いちらつき
+        flickerMul = 0.2 + Math.random() * 0.2;
+        flickerNext = 0.05 + Math.random() * 0.08;
+      } else {
+        // まれに一瞬途切れ
+        flickerMul = 0.05;
+        flickerNext = 0.04 + Math.random() * 0.05;
+      }
+      // 次の通常間隔（ストーリーが進むとやや頻繁）
+      const unrest = Math.min(0.6, storyStage * 0.08);
+      setTimeout(function () {
+        flickerMul = 1;
+        flickerNext = (3.5 + Math.random() * 9) * (1 - unrest * 0.4);
+        flickerTimer = 0;
+      }, flickerNext * 1000);
+    }
+    flashlight.intensity = baseFlashIntensity * flickerMul;
   }
 
   if (document.readyState === 'loading') {
