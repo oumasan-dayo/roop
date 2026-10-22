@@ -81,11 +81,8 @@
   let loopInProgress = false;
   let introIndex = 0;
   const INTRO_LINES = [
-    '……ここは、どこだ？',
-    '気がつくと、見知らぬ廊下に立っていた。',
-    '前方に、ドアが見える。',
-    '……あそこから出られるはずだ。',
-    '出口へ向かおう。'
+    '……ここは、どこだ？\n気がつくと、見知らぬ廊下に立っていた。',
+    '前方に、ドアが見える。\n……あそこから出られるはずだ。\n出口へ向かおう。'
   ];
 
   // 3周目イベント / 謎解き
@@ -165,6 +162,14 @@
   let room4DoorState = null;
   let escapeExitMesh = null;
   let chaseFaceSpeed = 3.05;
+  let escapePhase = 'none'; // none|run|bridge|crawl|push|final|exit_cine
+  let crawlActive = false;
+  let pushGaugeOpen = false;
+  let pushGaugeT = 0;
+  let pushFurnitureDone = false;
+  let pushFurnitureMesh = null;
+  let escapeCineT = 0;
+  let escapeZones = null; // { bridgeZ0,bridgeZ1, crawlZ0,crawlZ1, pushZ, exitZ }
   let chapterAnnounced = {};
   let retryCheckpoint = null;
   // 顔チェイス段階: idle | emerge | chase | caught
@@ -2338,14 +2343,16 @@
     const W = CONFIG.corridorWidth;
     const H = CONFIG.corridorHeight;
     const halfW = W / 2;
-    // 白い部屋奥行き45より長い逃走区間：奥ドアの先をさらに +50 延長
-    const extra = 52;
+    const extra = 78; // 逃走コースを大幅に延長
     const wallMat = sharedWallMat
       ? sharedWallMat.clone()
       : new THREE.MeshStandardMaterial({ color: 0xb8ac98, roughness: 0.92 });
     const floorMat = new THREE.MeshStandardMaterial({ color: 0xa09078, roughness: 0.85 });
     const ceilMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 0.95 });
+    const darkMat = makeMat(0x3a3228, 0.9, 0.02);
+    const wood = makeMat(0x5a4a38, 0.88, 0.04);
 
+    // 床・天井・壁（延長）
     const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, extra), floorMat);
     floor.position.set(0, 0.01, L + extra / 2);
     scene.add(floor);
@@ -2360,14 +2367,77 @@
     right.rotation.y = -Math.PI / 2;
     right.position.set(halfW, H / 2, L + extra / 2);
     scene.add(right);
-
-    // 延長区間の壁コリジョン
     addCollider(-halfW - 0.5, 0, L, 0.5, H, extra);
     addCollider(halfW, 0, L, 0.5, H, extra);
-    // 行き止まり（脱出光のさらに奥）
-    addCollider(-halfW, 0, L + extra - 0.3, W, H, 0.5);
 
-    // チェイス中：入口側・Room4以外の逆走を塞ぐ（廊下入口付近）
+    // ゾーン定義（廊下 L から先）
+    // 1) 通常走  L+0〜L+12
+    // 2) 極細通路 L+12〜L+22  左右に穴
+    // 3) 通常    L+22〜L+30
+    // 4) くぐる  L+30〜L+38
+    // 5) 通常    L+38〜L+46
+    // 6) 家具    L+48
+    // 7) 直線    L+52〜L+extra-3 出口
+    const zBridge0 = L + 12;
+    const zBridge1 = L + 22;
+    const zCrawl0 = L + 30;
+    const zCrawl1 = L + 38;
+    const zPush = L + 48;
+    const zExit = L + extra - 3.0;
+    escapeZones = {
+      bridgeZ0: zBridge0, bridgeZ1: zBridge1,
+      crawlZ0: zCrawl0, crawlZ1: zCrawl1,
+      pushZ: zPush, exitZ: zExit
+    };
+
+    // --- 極細通路：中央の細い床、左右は穴（落下＝失敗）---
+    // 既存床を穴扱いにするため、左右に黒穴メッシュ＋落下判定ゾーン
+    for (let side = -1; side <= 1; side += 2) {
+      const pit = new THREE.Mesh(
+        new THREE.BoxGeometry(1.15, 0.08, zBridge1 - zBridge0),
+        new THREE.MeshBasicMaterial({ color: 0x050505 })
+      );
+      pit.position.set(side * 1.05, -0.02, (zBridge0 + zBridge1) / 2);
+      scene.add(pit);
+    }
+    // 中央足場を少し高く
+    const plank = new THREE.Mesh(
+      new THREE.BoxGeometry(0.85, 0.12, zBridge1 - zBridge0),
+      wood
+    );
+    plank.position.set(0, 0.06, (zBridge0 + zBridge1) / 2);
+    scene.add(plank);
+    // 足場の外側は通れないよう横壁
+    addCollider(-halfW, 0, zBridge0, 0.95, H, zBridge1 - zBridge0);
+    addCollider(0.55, 0, zBridge0, halfW - 0.55 + 0.5, H, zBridge1 - zBridge0);
+
+    // --- くぐる障害：低い梁 ---
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(W - 0.3, 1.4, 2.2), darkMat);
+    beam.position.set(0, H - 0.55, (zCrawl0 + zCrawl1) / 2);
+    scene.add(beam);
+    addCollider(-halfW + 0.1, 1.15, zCrawl0 + 0.3, W - 0.2, 1.6, zCrawl1 - zCrawl0 - 0.6);
+    // 足元の散乱物
+    for (let i = 0; i < 5; i++) {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4 + Math.random() * 0.3, 0.25, 0.35),
+        i % 2 ? wood : darkMat
+      );
+      box.position.set((i - 2) * 0.45, 0.12, zCrawl0 + 1.2 + i * 0.5);
+      box.rotation.y = i * 0.4;
+      scene.add(box);
+    }
+
+    // --- 家具をどかす ---
+    pushFurnitureMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 1.1, 0.7),
+      wood
+    );
+    pushFurnitureMesh.position.set(0.15, 0.55, zPush);
+    scene.add(pushFurnitureMesh);
+    window._pushCol = addCollider(-0.55, 0, zPush - 0.45, 1.5, 1.2, 0.9);
+    pushFurnitureDone = false;
+
+    // 逆走ブロック
     const block = new THREE.Mesh(
       new THREE.BoxGeometry(W - 0.2, H, 0.3),
       new THREE.MeshStandardMaterial({ color: 0x2a241c, roughness: 0.9 })
@@ -2377,29 +2447,39 @@
     addCollider(-halfW + 0.1, 0, 1.0, W - 0.2, H, 0.4);
     window._chaseBlockMesh = block;
 
-    // 移動範囲を延長
-    playBounds.zMaxOpen = L + extra - 0.5;
-    playBounds.zMaxClosed = L + extra - 0.5;
+    // 出口ドア見た目（奥）
+    const exitDoorGroup = new THREE.Group();
+    exitDoorGroup.position.set(0, 0, zExit);
+    const exitDoorMat = makeMat(0x4a3c30, 0.78, 0.08);
+    const exitDoor = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.08), exitDoorMat);
+    exitDoor.position.set(0, 1.1, 0);
+    exitDoorGroup.add(exitDoor);
+    // 遮光はドアの奥側のみ
+    const exitBack = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 2.4, 0.04),
+      new THREE.MeshBasicMaterial({ color: 0x000000 })
+    );
+    exitBack.position.set(0, 1.1, 0.08);
+    exitDoorGroup.add(exitBack);
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.9, 2.0),
+      new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.55, depthWrite: false })
+    );
+    glow.position.set(0, 1.1, -0.06);
+    exitDoorGroup.add(glow);
+    scene.add(exitDoorGroup);
+    window._exitDoorGroup = exitDoorGroup;
+    window._escapeExitZ = zExit;
 
-    // 出口光を延長先に
     if (escapeExitMesh) {
       scene.remove(escapeExitMesh);
       escapeExitMesh = null;
     }
-    const z = L + extra - 2.0;
-    const group = new THREE.Group();
-    group.position.set(0, 1.1, z);
-    const glow = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.0, 2.1),
-      new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.88, depthWrite: false })
-    );
-    group.add(glow);
-    const light = new THREE.PointLight(0xfff8f0, 2.0, 6, 1.6);
-    light.position.set(0, 0, 0.2);
-    group.add(light);
-    scene.add(group);
-    escapeExitMesh = group;
-    window._escapeExitZ = z;
+    escapeExitMesh = exitDoorGroup;
+
+    playBounds.zMaxOpen = zExit + 1.5;
+    playBounds.zMaxClosed = zExit + 1.5;
+    escapePhase = 'run';
   }
 
   function spawnEscapeExit() {
@@ -2515,18 +2595,32 @@
 
     if (facePhase !== 'chase' || !room4Chase) return;
 
-    const toPlayer = new THREE.Vector3(
-      player.position.x - room4Face.position.x,
-      0,
-      player.position.z - room4Face.position.z
-    );
-    const dist = toPlayer.length();
-    if (dist > 0.2) {
-      toPlayer.normalize();
-      room4Face.position.x += toPlayer.x * chaseFaceSpeed * dt;
-      room4Face.position.z += toPlayer.z * chaseFaceSpeed * dt;
-      room4Face.position.y = 1.55;
+    // 廊下に沿って後方から追う（壁貫通しない）
+    const halfW = playBounds.halfW;
+    const targetX = Math.max(-halfW + 0.45, Math.min(halfW - 0.45, player.position.x * 0.35));
+    // プレイヤーの後ろ（進行方向と反対）に目標を置く
+    const behind = 2.8 + Math.min(4, Math.max(0, 6 - Math.abs(player.position.z - room4Face.position.z) * 0.3));
+    // プレイヤーが +Z へ逃げる想定：顔はプレイヤーより小さい Z
+    let targetZ = player.position.z - behind;
+    if (room4Face.position.z > player.position.z + 1.5) {
+      // 前に出過ぎたら後ろへ戻す
+      targetZ = player.position.z - 3.0;
     }
+    const fdx = targetX - room4Face.position.x;
+    const fdz = targetZ - room4Face.position.z;
+    const fdist = Math.sqrt(fdx * fdx + fdz * fdz) || 1;
+    // 障害物ゾーンでは減速
+    let spd = chaseFaceSpeed;
+    if (escapeZones) {
+      const fz = room4Face.position.z;
+      if (fz > escapeZones.bridgeZ0 - 1 && fz < escapeZones.bridgeZ1 + 1) spd *= 0.55;
+      if (fz > escapeZones.crawlZ0 - 1 && fz < escapeZones.crawlZ1 + 1) spd *= 0.4;
+    }
+    room4Face.position.x += (fdx / fdist) * spd * dt;
+    room4Face.position.z += (fdz / fdist) * spd * dt;
+    // 廊下内にクランプ
+    room4Face.position.x = Math.max(-halfW + 0.35, Math.min(halfW - 0.35, room4Face.position.x));
+    room4Face.position.y = 1.55;
     faceLookAtPlayer();
 
     // 出現演出中はここに来ない。チェイス開始後の猶予が終わるまで捕獲しない
@@ -2544,14 +2638,186 @@
       }
     }
 
-    // 奥の光、または開いた後ろドアから脱出
-    if (escapeExitMesh && player.position.z > (window._escapeExitZ || CONFIG.corridorLength) - 0.8 && Math.abs(player.position.x) < 0.6) {
-      onEscapeSuccess();
+    // ギミック・落下・脱出判定
+    updateEscapeGimmicks(dt);
+
+    if (facePhase === 'exit_cine') {
+      updateEscapeCinematic(dt);
+      return;
     }
-    if (room4Chase && backDoorState && backDoorState.open && player.position.z < 0.6 && Math.abs(player.position.x) < 0.7) {
-      onEscapeSuccess();
+
+    // 出口ドア到達 → 脱出ムービー（調査不要）
+    if (escapeExitMesh && window._escapeExitZ != null) {
+      if (player.position.z > window._escapeExitZ - 1.2 && Math.abs(player.position.x) < 0.75) {
+        startEscapeCinematic();
+        return;
+      }
     }
   }
+
+  function updateEscapeGimmicks(dt) {
+    if (!escapeZones || !room4Chase || facePhase !== 'chase') return;
+    const z = player.position.z;
+    const x = player.position.x;
+
+    // 極細通路：中央から外れたら落下＝捕獲
+    if (z > escapeZones.bridgeZ0 && z < escapeZones.bridgeZ1) {
+      if (Math.abs(x) > 0.42) {
+        onCaughtByFace();
+        return;
+      }
+    }
+
+    // くぐる：ゾーン内は視点低下＋減速
+    if (z > escapeZones.crawlZ0 && z < escapeZones.crawlZ1) {
+      crawlActive = true;
+    } else {
+      crawlActive = false;
+    }
+
+    // 家具ゲージ
+    if (!pushFurnitureDone && Math.abs(z - escapeZones.pushZ) < 1.6 && Math.abs(x) < 1.2) {
+      if (!pushGaugeOpen) {
+        pushGaugeOpen = true;
+        pushGaugeT = 0;
+        showPushGauge(true);
+      }
+      pushGaugeT += dt;
+      updatePushGaugeVisual(pushGaugeT);
+    } else if (pushGaugeOpen && !pushFurnitureDone) {
+      // 離れたら閉じる（失敗扱いではない）
+      pushGaugeOpen = false;
+      showPushGauge(false);
+    }
+  }
+
+  function showPushGauge(show) {
+    let el = document.getElementById('push-gauge');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'push-gauge';
+      el.innerHTML = '<div class="push-label">タイミングで押せ</div><div class="push-bar"><div class="push-zone"></div><div class="push-needle"></div></div>';
+      document.body.appendChild(el);
+      el.addEventListener('touchend', function (e) {
+        e.preventDefault();
+        tryPushFurniture();
+      }, { passive: false });
+      el.addEventListener('click', function (e) {
+        e.preventDefault();
+        tryPushFurniture();
+      });
+    }
+    if (show) el.classList.add('visible');
+    else el.classList.remove('visible');
+  }
+
+  function updatePushGaugeVisual(t) {
+    const needle = document.querySelector('#push-gauge .push-needle');
+    if (!needle) return;
+    // 0〜1 を往復
+    const cycle = (t % 1.6) / 1.6;
+    const pos = cycle < 0.5 ? cycle * 2 : 2 - cycle * 2;
+    needle.style.left = (pos * 100) + '%';
+  }
+
+  function tryPushFurniture() {
+    if (!pushGaugeOpen || pushFurnitureDone) return;
+    const cycle = (pushGaugeT % 1.6) / 1.6;
+    const pos = cycle < 0.5 ? cycle * 2 : 2 - cycle * 2;
+    // 成功ゾーン 0.35〜0.65
+    if (pos >= 0.35 && pos <= 0.65) {
+      pushFurnitureDone = true;
+      pushGaugeOpen = false;
+      showPushGauge(false);
+      if (window._pushCol) window._pushCol.active = false;
+      if (pushFurnitureMesh) {
+        // 横にずらす
+        pushFurnitureMesh.position.x = 1.4;
+        pushFurnitureMesh.rotation.y = 0.5;
+      }
+    } else {
+      // 失敗：時間ロス（顔が近づく）
+      if (room4Face) {
+        room4Face.position.z = Math.min(player.position.z - 1.2, room4Face.position.z + 1.8);
+      }
+      pushGaugeT = 0;
+    }
+  }
+
+  function startEscapeCinematic() {
+    if (facePhase === 'exit_cine') return;
+    facePhase = 'exit_cine';
+    room4Chase = false;
+    controlsLocked = true;
+    clearAllInput();
+    setControlsVisible(false);
+    escapeCineT = 0;
+    showPushGauge(false);
+    gameState = 'intro';
+  }
+
+  function updateEscapeCinematic(dt) {
+    escapeCineT += dt;
+    const t = escapeCineT;
+    // 1) 0〜0.8 ドア前で停止、顔が後方から迫る
+    if (t < 0.9) {
+      const u = t / 0.9;
+      if (room4Face) {
+        const behind = 4.5 - u * 3.2;
+        room4Face.position.set(
+          player.position.x * 0.3,
+          1.55,
+          player.position.z - behind
+        );
+        faceLookAtPlayer();
+      }
+      camera.position.copy(player.position);
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = player.yaw;
+      camera.rotation.x = player.pitch;
+      return;
+    }
+    // 2) 0.9〜1.8 ドアが閉まる（scale/回転で閉める表現）
+    if (t < 1.85) {
+      const u = (t - 0.9) / 0.95;
+      const e = smootherstep(Math.min(1, u));
+      if (window._exitDoorGroup) {
+        // 二枚扉が中央で閉じる風
+        const door = window._exitDoorGroup.children[0];
+        if (door) {
+          door.scale.x = 1 + e * 0.15;
+          door.position.z = e * 0.15;
+        }
+      }
+      if (room4Face) {
+        // ドア手前で止まる
+        room4Face.position.set(0, 1.55, player.position.z - 1.4 + e * 0.3);
+        faceLookAtPlayer();
+        const sc = 1 + e * 0.8;
+        room4Face.scale.set(sc, sc, sc);
+      }
+      // カメラ少し後ろを振り返る
+      player.yaw = player.yaw * (1 - e * 0.15);
+      camera.position.copy(player.position);
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = player.yaw + e * 0.35;
+      camera.rotation.x = -0.05;
+      return;
+    }
+    // 3) 静寂 → 暗転 → エンディング
+    if (t < 2.6) {
+      if (room4Face) room4Face.visible = false;
+      const fade = document.getElementById('fade-overlay');
+      if (fade) {
+        fade.classList.remove('hidden');
+        fade.classList.add('active');
+      }
+      return;
+    }
+    facePhase = 'done';
+    onEscapeSuccess();
+  }
+
 
   function showChaseHint(text) {
     fleeHintActive = true;
@@ -3222,7 +3488,8 @@
     updateStaminaUI();
 
     const speedMul = isDashing ? CONFIG.dashMultiplier : 1;
-    const speed = CONFIG.moveSpeed * speedMul;
+    let speed = CONFIG.moveSpeed * speedMul;
+    if (crawlActive) speed *= 0.42;
     const moveX = (-sin * inputZ + cos * inputX) * speed * dt;
     const moveZ = (-cos * inputZ - sin * inputX) * speed * dt;
 
@@ -3307,9 +3574,13 @@
       bobZ = Math.cos(headBobTime * 0.55) * headBobAmount * 0.25;
     }
 
+    let camY = player.position.y + bobY;
+    if (crawlActive && room4Chase) {
+      camY = CONFIG.eyeHeight * 0.52 + bobY * 0.5;
+    }
     camera.position.set(
       player.position.x + bobX,
-      player.position.y + bobY,
+      camY,
       player.position.z + bobZ
     );
     camera.rotation.order = 'YXZ';
