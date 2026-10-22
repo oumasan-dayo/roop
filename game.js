@@ -1948,7 +1948,8 @@
       open: false,
       animating: false,
       angle: 0,
-      targetAngle: Math.PI * 0.75
+      // 廊下側（プレイヤー側）へ引いて開く
+      targetAngle: -Math.PI * 0.82
     };
     registerInteractable({
       id: 'door_room4',
@@ -2597,9 +2598,13 @@
         faceCaught = false;
         window._chaseGrace = 2.5;
         camera.position.copy(player.position);
-        if (!escapeExitMesh) spawnEscapeExit();
-        extendChaseCorridor();
-        showChaseHint('逃げろ。'); // この中で操作ロック継続→終了後に解禁
+        try {
+          if (!escapeExitMesh) spawnEscapeExit();
+        } catch (err) { console.warn(err); }
+        try {
+          extendChaseCorridor();
+        } catch (err) { console.warn(err); }
+        showChaseHint('逃げろ。');
       }
       return;
     }
@@ -2835,12 +2840,24 @@
   }
 
 
+  function unlockChaseControls() {
+    fleeHintActive = false;
+    controlsLocked = false;
+    gameState = 'playing';
+    document.body.classList.remove('state-intro');
+    document.body.classList.add('state-playing');
+    clearAllInput();
+    setControlsVisible(true);
+  }
+
   function showChaseHint(text) {
     fleeHintActive = true;
     controlsLocked = true;
     clearAllInput();
     setControlsVisible(false);
-    gameState = 'intro';
+    // body の intro クラスでスティックが消えるのを防ぐ
+    document.body.classList.remove('state-intro');
+    document.body.classList.add('state-playing');
 
     const el = document.getElementById('message-panel');
     const mt = document.getElementById('message-text');
@@ -2852,15 +2869,18 @@
       if (closeBtn) closeBtn.classList.add('hidden');
       if (nextBtn) nextBtn.classList.add('hidden');
     }
+    // 通常解除
     setTimeout(function () {
       if (el) el.classList.add('hidden');
-      fleeHintActive = false;
-      controlsLocked = false;
-      gameState = 'playing';
-      clearAllInput();
-      setControlsVisible(true);
-      // チェイス中は調べる非表示を維持（updateInteractionで制御）
-    }, 2200);
+      unlockChaseControls();
+    }, 2000);
+    // 保険：何があっても操作ロックを残さない
+    setTimeout(function () {
+      if (room4Chase && (controlsLocked || fleeHintActive || gameState !== 'playing')) {
+        unlockChaseControls();
+        if (el) el.classList.add('hidden');
+      }
+    }, 3200);
   }
 
   function clearAllInput() {
@@ -2881,7 +2901,10 @@
     for (let i = 0; i < ids.length; i++) {
       const el = document.getElementById(ids[i]);
       if (!el) continue;
-      if (vis && gameState === 'playing' && !controlsLocked && facePhase !== 'emerge' && facePhase !== 'caught' && !fleeHintActive) {
+      const canShow = vis && !controlsLocked && !fleeHintActive
+        && facePhase !== 'emerge' && facePhase !== 'caught' && facePhase !== 'exit_cine'
+        && (gameState === 'playing' || (room4Chase && facePhase === 'chase'));
+      if (canShow) {
         el.classList.remove('hidden');
         el.style.pointerEvents = '';
       } else {
@@ -3216,10 +3239,10 @@
     handle.position.set(0.38, 1.0, 0.08);
     leaf.add(handle);
 
-    // 奥ドア：プレイヤー側に木目表面を向ける（表裏反転）
-    if (id === 'front') {
-      leaf.scale.z = -1;
-    }
+    // プレイヤー側（廊下内側）に木目表面を向ける
+    // front: 無回転で +Z が外側 → scale.z=-1 で内側向き
+    // back: group が 180° 回転しているため同様に scale.z=-1 で内側向き
+    leaf.scale.z = -1;
 
     scene.add(group);
 
@@ -3268,7 +3291,8 @@
         open: false,
         animating: false,
         angle: 0,
-        targetAngle: -Math.PI * 0.75
+        // 手前（プレイヤー側）へ引いて開く
+        targetAngle: Math.PI * 0.82
       };
       registerInteractable({
         id: 'door_front',
@@ -3286,8 +3310,8 @@
         open: false,
         animating: false,
         angle: 0,
-        // 入口側は内側から見てヒンジが逆向きに開く
-        targetAngle: Math.PI * 0.75
+        // 手前（廊下側）へ引いて開く
+        targetAngle: -Math.PI * 0.82
       };
       // 初期は調査のみ「開かない」— 3周目謎解き開始後に kind を door に切替
       registerInteractable({
