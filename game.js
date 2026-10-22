@@ -1906,6 +1906,7 @@
 
     const frameMat = makeMat(0x3a3028, 0.75, 0.1);
     const doorMat = makeMat(0x4a3c30, 0.78, 0.08);
+    doorMat.side = THREE.DoubleSide;
     const topFrame = new THREE.Mesh(new THREE.BoxGeometry(doorW + frameThick * 2, frameThick, 0.1), frameMat);
     topFrame.position.set(0, doorH + frameThick / 2, 0);
     group.add(topFrame);
@@ -1926,13 +1927,6 @@
     door.position.set(0, doorH / 2, 0.01);
     leaf.add(door);
     // 裏側の黒遮蔽（閉じ時の白漏れ防止）
-    // 裏側のみ（プレイヤー側から見えない位置）。表の木目ドアは維持
-    const doorBack = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW * 0.96, doorH * 0.96, 0.015),
-      new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.FrontSide })
-    );
-    doorBack.position.set(0, doorH / 2, -0.045);
-    leaf.add(doorBack);
     const handle = new THREE.Mesh(
       new THREE.BoxGeometry(0.03, 0.1, 0.06),
       makeMat(0x8a7a60, 0.4, 0.6)
@@ -2472,12 +2466,8 @@
     exitDoor.position.set(0, 1.1, 0);
     exitDoorGroup.add(exitDoor);
     // 遮光はドアの奥側のみ
-    const exitBack = new THREE.Mesh(
-      new THREE.BoxGeometry(1.2, 2.4, 0.04),
-      new THREE.MeshBasicMaterial({ color: 0x000000 })
-    );
-    exitBack.position.set(0, 1.1, 0.08);
-    exitDoorGroup.add(exitBack);
+    // 遮光用の黒面は付けない（表裏とも木目）
+    exitDoorMat.side = THREE.DoubleSide;
     const glow = new THREE.Mesh(
       new THREE.PlaneGeometry(0.9, 2.0),
       new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.55, depthWrite: false })
@@ -2616,31 +2606,31 @@
 
     if (facePhase !== 'chase' || !room4Chase) return;
 
-    // 廊下に沿って後方から追う（壁貫通しない）
+    // プレイヤーを捕獲するまで追跡（距離維持AIは使わない）
     const halfW = playBounds.halfW;
-    const targetX = Math.max(-halfW + 0.45, Math.min(halfW - 0.45, player.position.x * 0.35));
-    // プレイヤーの後ろ（進行方向と反対）に目標を置く
-    const behind = 2.8 + Math.min(4, Math.max(0, 6 - Math.abs(player.position.z - room4Face.position.z) * 0.3));
-    // プレイヤーが +Z へ逃げる想定：顔はプレイヤーより小さい Z
-    let targetZ = player.position.z - behind;
-    if (room4Face.position.z > player.position.z + 1.5) {
-      // 前に出過ぎたら後ろへ戻す
-      targetZ = player.position.z - 3.0;
+    // 目標はプレイヤー本体。廊下内では X を通路幅にクランプした経路
+    let targetX = player.position.x;
+    let targetZ = player.position.z;
+    // 部屋内（x が大きい）では部屋座標のまま、廊下では中央寄りに経路制限
+    if (player.position.x < halfW + 1.5 && room4Face.position.x < halfW + 2.0) {
+      targetX = Math.max(-halfW + 0.4, Math.min(halfW - 0.4, player.position.x));
     }
     const fdx = targetX - room4Face.position.x;
     const fdz = targetZ - room4Face.position.z;
     const fdist = Math.sqrt(fdx * fdx + fdz * fdz) || 1;
-    // 障害物ゾーンでは減速
-    let spd = chaseFaceSpeed;
+    let spd = chaseFaceSpeed * 1.15;
+    // ギミック区間は少し減速（完全停止はしない）
     if (escapeZones) {
       const fz = room4Face.position.z;
-      if (fz > escapeZones.bridgeZ0 - 1 && fz < escapeZones.bridgeZ1 + 1) spd *= 0.55;
-      if (fz > escapeZones.crawlZ0 - 1 && fz < escapeZones.crawlZ1 + 1) spd *= 0.4;
+      if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.7;
+      if (fz > escapeZones.crawlZ0 - 0.5 && fz < escapeZones.crawlZ1 + 0.5) spd *= 0.55;
     }
     room4Face.position.x += (fdx / fdist) * spd * dt;
     room4Face.position.z += (fdz / fdist) * spd * dt;
-    // 廊下内にクランプ
-    room4Face.position.x = Math.max(-halfW + 0.35, Math.min(halfW - 0.35, room4Face.position.x));
+    // 壁貫通防止：廊下部にいるときのみ幅クランプ
+    if (room4Face.position.x < halfW + 0.8) {
+      room4Face.position.x = Math.max(-halfW + 0.3, Math.min(halfW - 0.3, room4Face.position.x));
+    }
     room4Face.position.y = 1.55;
     faceLookAtPlayer();
 
@@ -3186,6 +3176,7 @@
     if (flip) group.rotation.y = Math.PI;
 
     const doorWood = makeMat(0x4a3c30, 0.78, 0.08);
+    doorWood.side = THREE.DoubleSide;
     const frameMat = makeMat(0x3a3028, 0.75, 0.1);
     const frameThick = 0.08;
     const doorW = 1.05;
@@ -3218,15 +3209,9 @@
     const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.06), doorWood);
     door.position.set(0, doorH / 2, 0.01);
     leaf.add(door);
-    // 遮光は裏側のみ（表の木目がプレイヤー側）
-    const doorBack = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW * 0.96, doorH * 0.96, 0.015),
-      new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.FrontSide })
-    );
-    doorBack.position.set(0, doorH / 2, -0.045);
-    leaf.add(doorBack);
 
     const panelMat = makeMat(0x3f3328, 0.8, 0.05);
+    panelMat.side = THREE.DoubleSide;
     [[-0.22, 1.5], [0.22, 1.5], [-0.22, 0.55], [0.22, 0.55]].forEach(function (p, i) {
       const h = i < 2 ? 0.7 : 0.55;
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.38, h, 0.02), panelMat);
@@ -3311,7 +3296,7 @@
         animating: false,
         angle: 0,
         // 手前（廊下側）へ引いて開く
-        targetAngle: -Math.PI * 0.82
+        targetAngle: Math.PI * 0.82
       };
       // 初期は調査のみ「開かない」— 3周目謎解き開始後に kind を door に切替
       registerInteractable({
