@@ -2346,10 +2346,36 @@
     window._leftDebrisGroup = group;
   }
 
+
+  function openFrontDoorForEscape() {
+    if (frontDoorState) {
+      frontDoorState.open = true;
+      frontDoorState.animating = false;
+      frontDoorState.angle = frontDoorState.targetAngle;
+      if (frontDoorState.pivot) frontDoorState.pivot.rotation.y = frontDoorState.angle;
+      if (frontDoorState.collider) frontDoorState.collider.active = false;
+      for (let i = 0; i < interactables.length; i++) {
+        if (interactables[i].id === 'door_front') interactables[i].radius = 0;
+      }
+    }
+    // Room4 扉も逃走中は通れるように
+    if (room4DoorState) {
+      room4DoorState.open = true;
+      room4DoorState.animating = false;
+      room4DoorState.angle = room4DoorState.targetAngle;
+      if (room4DoorState.pivot) room4DoorState.pivot.rotation.y = room4DoorState.angle;
+      if (room4DoorState.collider) room4DoorState.collider.active = false;
+      if (window._rightWallCol) window._rightWallCol.active = false;
+    }
+    playBounds.zMaxClosed = playBounds.zMaxOpen;
+  }
+
   function extendChaseCorridor() {
     if (window._chaseExtended) return;
     window._chaseExtended = true;
     spawnLeftDebrisPile();
+    // 逃走路確保：正面ドアを開けてコリジョンを外す（調査不要で奥へ進める）
+    openFrontDoorForEscape();
     const L = CONFIG.corridorLength;
     const W = CONFIG.corridorWidth;
     const H = CONFIG.corridorHeight;
@@ -2606,31 +2632,28 @@
 
     if (facePhase !== 'chase' || !room4Chase) return;
 
-    // プレイヤーを捕獲するまで追跡（距離維持AIは使わない）
+    // プレイヤーを追跡（コリジョン尊重・壁／ドアを貫通しない）
     const halfW = playBounds.halfW;
-    // 目標はプレイヤー本体。廊下内では X を通路幅にクランプした経路
     let targetX = player.position.x;
     let targetZ = player.position.z;
-    // 部屋内（x が大きい）では部屋座標のまま、廊下では中央寄りに経路制限
-    if (player.position.x < halfW + 1.5 && room4Face.position.x < halfW + 2.0) {
-      targetX = Math.max(-halfW + 0.4, Math.min(halfW - 0.4, player.position.x));
-    }
     const fdx = targetX - room4Face.position.x;
     const fdz = targetZ - room4Face.position.z;
     const fdist = Math.sqrt(fdx * fdx + fdz * fdz) || 1;
-    let spd = chaseFaceSpeed * 1.15;
-    // ギミック区間は少し減速（完全停止はしない）
+    let spd = chaseFaceSpeed * 1.12;
     if (escapeZones) {
       const fz = room4Face.position.z;
-      if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.7;
-      if (fz > escapeZones.crawlZ0 - 0.5 && fz < escapeZones.crawlZ1 + 0.5) spd *= 0.55;
+      if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.75;
+      if (fz > escapeZones.crawlZ0 - 0.5 && fz < escapeZones.crawlZ1 + 0.5) spd *= 0.6;
     }
-    room4Face.position.x += (fdx / fdist) * spd * dt;
-    room4Face.position.z += (fdz / fdist) * spd * dt;
-    // 壁貫通防止：廊下部にいるときのみ幅クランプ
-    if (room4Face.position.x < halfW + 0.8) {
-      room4Face.position.x = Math.max(-halfW + 0.3, Math.min(halfW - 0.3, room4Face.position.x));
-    }
+    const prevFace = room4Face.position.clone();
+    const tryPos = prevFace.clone();
+    tryPos.x += (fdx / fdist) * spd * dt;
+    tryPos.z += (fdz / fdist) * spd * dt;
+    tryPos.y = 1.55;
+    // 軸分離でコリジョン解決（プレイヤーと同じ colliders）
+    resolveFaceCollision(tryPos, prevFace, 'x');
+    resolveFaceCollision(tryPos, prevFace, 'z');
+    room4Face.position.copy(tryPos);
     room4Face.position.y = 1.55;
     faceLookAtPlayer();
 
@@ -2903,7 +2926,7 @@
       }
     }
     const ab = document.getElementById('action-btn');
-    if (ab && (!vis || room4Chase || facePhase === 'chase' || facePhase === 'emerge' || facePhase === 'caught' || fleeHintActive)) {
+    if (ab && (!vis || facePhase === 'emerge' || facePhase === 'caught' || facePhase === 'exit_cine' || fleeHintActive)) {
       ab.classList.add('hidden');
     }
   }
@@ -3634,6 +3657,29 @@
    * 軸分離衝突：prev の位置から見て押し出し方向を決定
    * 角に食い込んでも反対側へ飛ばさない
    */
+  function resolveFaceCollision(pos, prev, axis) {
+    const r = 0.45;
+    const pMinY = 0.3;
+    const pMaxY = 2.2;
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (c.active === false) continue;
+      const minX = c.min.x - r;
+      const maxX = c.max.x + r;
+      const minZ = c.min.z - r;
+      const maxZ = c.max.z + r;
+      if (pMaxY < c.min.y || pMinY > c.max.y) continue;
+      if (!(pos.x > minX && pos.x < maxX && pos.z > minZ && pos.z < maxZ)) continue;
+      if (axis === 'x') {
+        const cx = (minX + maxX) * 0.5;
+        pos.x = (prev.x <= cx) ? minX : maxX;
+      } else {
+        const cz = (minZ + maxZ) * 0.5;
+        pos.z = (prev.z <= cz) ? minZ : maxZ;
+      }
+    }
+  }
+
   function resolveCollisionAxis(pos, prev, axis) {
     const r = CONFIG.playerRadius;
     const h = CONFIG.playerHeight - 0.25;
@@ -4550,6 +4596,32 @@
     frontDoorState.pivot.rotation.y = frontDoorState.angle;
   }
 
+  function updateInteractionDoorsOnly() {
+    if (!actionBtn) return;
+    const camPos = camera.position;
+    let best = null;
+    let bestDist = 2.2;
+    for (let i = 0; i < interactables.length; i++) {
+      const it = interactables[i];
+      if (it.radius <= 0) continue;
+      if (it.kind !== 'door' && it.kind !== 'room4door') continue;
+      if (it.id === 'door_front' && frontDoorState && (frontDoorState.open || frontDoorState.animating)) continue;
+      if (it.id === 'door_back' && backDoorState && (backDoorState.open || backDoorState.animating)) continue;
+      const d = camPos.distanceTo(it.position);
+      if (d < bestDist) {
+        bestDist = d;
+        best = it;
+      }
+    }
+    currentTarget = best;
+    if (best) {
+      actionBtn.textContent = best.label || '開ける';
+      actionBtn.classList.remove('hidden');
+    } else {
+      actionBtn.classList.add('hidden');
+    }
+  }
+
   function updateInteraction() {
     if (settingsOpen || messageOpen || pinOpen || gameState !== 'playing') {
       currentTarget = null;
@@ -4693,9 +4765,16 @@
         camera.rotation.z = 0;
       }
     }
-    if (!messageOpen && !pinOpen && !room4Chase && facePhase === 'idle' && !fleeHintActive && !controlsLocked) updateInteraction();
-    else if (room4Chase && facePhase === 'chase' && !fleeHintActive) { currentTarget = null; if (actionBtn) actionBtn.classList.add('hidden'); }
-    else {
+    if (!messageOpen && !pinOpen && !fleeHintActive && !controlsLocked && facePhase !== 'emerge' && facePhase !== 'caught' && facePhase !== 'exit_cine') {
+      if (room4Chase && facePhase === 'chase') {
+        updateInteractionDoorsOnly();
+      } else if (!room4Chase && facePhase === 'idle') {
+        updateInteraction();
+      } else {
+        currentTarget = null;
+        if (actionBtn) actionBtn.classList.add('hidden');
+      }
+    } else {
       currentTarget = null;
       if (actionBtn) actionBtn.classList.add('hidden');
     }
