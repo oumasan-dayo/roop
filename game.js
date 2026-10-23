@@ -1881,20 +1881,14 @@
         headerMat.map.repeat.set(headerW / 4.0, headerH / 2.6);
         headerMat.map.needsUpdate = true;
       }
+      // 薄い壁紙平面のみ（厚い箱は置かない）
       const header = new THREE.Mesh(
         new THREE.PlaneGeometry(headerW, headerH),
         headerMat
       );
       header.rotation.y = -Math.PI / 2;
-      header.position.set(halfW - 0.005, doorH + headerH / 2, z);
+      header.position.set(halfW - 0.002, doorH + headerH / 2, z);
       window._rightWallGroup.add(header);
-      // 枠の裏に薄い壁を足して隙間の白を消す
-      const seal = new THREE.Mesh(
-        new THREE.BoxGeometry(0.08, headerH + 0.1, headerW + 0.05),
-        wallMat.clone()
-      );
-      seal.position.set(halfW - 0.04, doorH + headerH / 2, z);
-      window._rightWallGroup.add(seal);
     }
 
     // 扉（廊下側から見て右壁、開口に埋め込み）
@@ -1933,7 +1927,7 @@
     leaf.add(handle);
     scene.add(group);
 
-    const col = addCollider(halfW - 0.25, 0, z - 0.55, 0.45, 2.3, 1.1);
+    const col = addCollider(halfW - 0.15, 0, z - 0.5, 0.28, 2.2, 1.0);
     room4DoorState = {
       pivot: pivot,
       collider: col,
@@ -2003,11 +1997,12 @@
     const openH = doorH || 2.15;
     const topH = 2.7 - openH;
     if (topH > 0.05) {
+      // 薄い上部壁（厚みを抑える）
       const wTop = new THREE.Mesh(
-        new THREE.BoxGeometry(0.2, topH, doorW + 0.2),
+        new THREE.BoxGeometry(0.06, topH, doorW + 0.35),
         whiteMat
       );
-      wTop.position.set(-hd + 0.1, openH + topH / 2, 0);
+      wTop.position.set(-hd + 0.03, openH + topH / 2, 0);
       room4Group.add(wTop);
     }
 
@@ -2070,11 +2065,16 @@
     addCollider(roomX - hd, 0, roomZ - hw, roomDepth, 2.7, 0.25);
     addCollider(roomX - hd, 0, roomZ + hw - 0.25, roomDepth, 2.7, 0.25);
     addCollider(roomX + hd - 0.25, 0, roomZ - hw, 0.25, 2.7, roomWidth);
-    const sideLen = hw - gap;
+    // 入口壁：開口をドアより広めに空けて透明壁化を防ぐ
+    const openGap = Math.max(gap, (doorW || 1.0) / 2 + 0.35);
+    const sideLen = hw - openGap;
     if (sideLen > 0.05) {
-      addCollider(roomX - hd, 0, roomZ - hw, 0.25, 2.7, sideLen);
-      addCollider(roomX - hd, 0, roomZ + gap, 0.25, 2.7, sideLen);
+      const c1 = addCollider(roomX - hd, 0, roomZ - hw, 0.2, 2.7, sideLen);
+      const c2 = addCollider(roomX - hd, 0, roomZ + openGap, 0.2, 2.7, sideLen);
+      window._room4DoorSideCols = [c1, c2];
     }
+    window._room4DoorOpenZ0 = roomZ - openGap;
+    window._room4DoorOpenZ1 = roomZ + openGap;
 
     // 移動クランプ用：部屋の実寸（ワールド座標）
     window._room4Bounds = {
@@ -2129,10 +2129,10 @@
       if (window._rightWallCol) window._rightWallCol.active = false;
       const halfW = CONFIG.corridorWidth / 2;
       const zDoor = 22.5;
-      // 開口はドア幅より広め（透明壁で詰まるのを防ぐ）
-      const gap = 0.75;
-      addCollider(halfW, 0, -1, 0.12, CONFIG.corridorHeight, zDoor - gap + 1);
-      addCollider(halfW, 0, zDoor + gap, 0.12, CONFIG.corridorHeight, CONFIG.corridorLength - (zDoor + gap) + 1);
+      const gap = 0.85;
+      addCollider(halfW, 0, -1, 0.1, CONFIG.corridorHeight, zDoor - gap + 1);
+      addCollider(halfW, 0, zDoor + gap, 0.1, CONFIG.corridorHeight, CONFIG.corridorLength - (zDoor + gap) + 1);
+      if (typeof clearCorridorCenterPath === 'function') clearCorridorCenterPath();
       for (let i = 0; i < interactables.length; i++) {
         if (interactables[i].id === 'door_room4') interactables[i].radius = 0;
       }
@@ -2369,6 +2369,7 @@
 
     // 正面ドア開口付近の進行阻害コリジョンを解除
     clearCollidersBlockingFrontDoor(L);
+    clearCorridorCenterPath();
 
     // 通常廊下と同じ質感
     const floorTex = createWoodFloorTexture(256);
@@ -2582,40 +2583,54 @@
   }
 
   function clearCollidersBlockingFrontDoor(L) {
-    // 通路中央（逃げ道）を塞ぐコリジョンを広めに解除
+    const halfW = CONFIG.corridorWidth / 2;
+    const doorZ = 22.5;
+    // ドア本体
+    if (frontDoorState && frontDoorState.collider) frontDoorState.collider.active = false;
+    if (room4DoorState && room4DoorState.collider) room4DoorState.collider.active = false;
+    if (window._rightWallCol) window._rightWallCol.active = false;
+    // 部屋入口の側面コリジョンは残すが、ドア本体は必ずオフ
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (c.active === false) continue;
-      const midX = (c.min.x + c.max.x) * 0.5;
-      const spansCenter = c.min.x < -0.35 && c.max.x > 0.35;
-      const nearFront = c.max.z > L - 1.0 && c.min.z < L + 2.5;
-      // 正面ドア付近で中央を塞ぐもの
-      if (spansCenter && nearFront) {
+      const cx0 = c.min.x;
+      const cx1 = c.max.x;
+      const cz0 = c.min.z;
+      const cz1 = c.max.z;
+      // 正面ドア開口（中央・z≈L）
+      if (cx0 < 0.55 && cx1 > -0.55 && cz1 > L - 0.8 && cz0 < L + 1.5) {
         c.active = false;
         continue;
       }
-      // 部屋出口〜廊下（z=20〜28）で中央を塞ぐ広い箱
-      const nearExit = c.max.z > 20 && c.min.z < 28;
-      if (spansCenter && nearExit && (c.max.x - c.min.x) > 1.5) {
-        c.active = false;
+      // 白い部屋の扉開口そのもの（x≈halfW, z≈22.5）
+      if (cx0 < halfW + 0.3 && cx1 > halfW - 0.6 && cz1 > doorZ - 0.9 && cz0 < doorZ + 0.9) {
+        // 側面の細長い壁（開口の外）は幅が狭いので残す
+        if ((cx1 - cx0) > 0.35 || (cz1 - cz0) < 2.0) {
+          c.active = false;
+        }
       }
     }
-    if (frontDoorState && frontDoorState.collider) {
-      frontDoorState.collider.active = false;
-    }
-    if (room4DoorState && room4DoorState.collider) {
-      room4DoorState.collider.active = false;
-    }
-    if (window._rightWallCol) window._rightWallCol.active = false;
-    // 部屋出口〜正面ドアまでの中央通路を再確認
+  }
+
+  /** 逃走中：廊下中央を塞ぐ当たりを強制解除 */
+  function clearCorridorCenterPath() {
+    const halfW = CONFIG.corridorWidth / 2;
+    const L = CONFIG.corridorLength;
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (c.active === false) continue;
-      if (c.min.x < -0.4 && c.max.x > 0.4 && c.min.z > 18 && c.max.z < L + 3) {
-        // 全幅に近いものは荷物封鎖以外を疑う（z が 20 超で入口封鎖でない）
-        if ((c.max.x - c.min.x) > 2.5 && c.min.z > 19.5) c.active = false;
+      // 左右の外壁は残す
+      if (c.max.x < -halfW + 0.55) continue;
+      if (c.min.x > halfW - 0.55) continue;
+      // 中央帯を横断し、部屋出口〜正面ドア先を塞ぐもの
+      const crossesCenter = c.min.x < -0.25 && c.max.x > 0.25;
+      if (!crossesCenter) continue;
+      if (c.max.z > 20.5 && c.min.z < L + 4) {
+        c.active = false;
       }
     }
+    if (frontDoorState && frontDoorState.collider) frontDoorState.collider.active = false;
+    if (room4DoorState && room4DoorState.collider) room4DoorState.collider.active = false;
   }
 
   function spawnEscapeExit() {
@@ -2773,27 +2788,29 @@
       if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.75;
       if (fz > escapeZones.crawlZ0 - 0.5 && fz < escapeZones.crawlZ1 + 0.5) spd *= 0.6;
     }
-    const prevFace = room4Face.position.clone();
-    const tryPos = prevFace.clone();
+    const tryPos = room4Face.position.clone();
     tryPos.x += (fdx / fdist) * spd * dt;
     tryPos.z += (fdz / fdist) * spd * dt;
     tryPos.y = 1.55;
-    // 扉付近は当たりを無視して通す
-    const nearDoor = Math.abs(tryPos.z - doorZ) < 2.2 && tryPos.x > halfW - 1.8;
-    if (!nearDoor) {
-      resolveFaceCollision(tryPos, prevFace, 'x');
-      resolveFaceCollision(tryPos, prevFace, 'z');
-    }
-    // ソフト境界のみ（壁貫通防止）
-    if (tryPos.x < halfW - 0.15) {
-      tryPos.x = Math.max(-halfW + 0.15, Math.min(halfW - 0.15, tryPos.x));
-    } else {
-      // 部屋側
+    // コリジョンは使わない。領域クランプのみ（扉ゾーンは常に通過可）
+    const z0 = window._room4DoorOpenZ0 != null ? window._room4DoorOpenZ0 : doorZ - 1.0;
+    const z1 = window._room4DoorOpenZ1 != null ? window._room4DoorOpenZ1 : doorZ + 1.0;
+    const inDoorWay = tryPos.z >= z0 - 0.3 && tryPos.z <= z1 + 0.3;
+    if (inDoorWay) {
+      // 扉の中は x を部屋〜廊下へ自由に跨がせる
+      if (window._room4Bounds) {
+        tryPos.x = Math.max(-halfW + 0.2, Math.min(window._room4Bounds.xMax - 0.2, tryPos.x));
+      }
+    } else if (tryPos.x >= halfW - 0.05) {
+      // 部屋内
       if (window._room4Bounds) {
         const rb = window._room4Bounds;
-        tryPos.x = Math.min(rb.xMax - 0.2, tryPos.x);
-        tryPos.z = Math.max(rb.zMin + 0.2, Math.min(rb.zMax - 0.2, tryPos.z));
+        tryPos.x = Math.max(halfW - 0.05, Math.min(rb.xMax - 0.2, tryPos.x));
+        tryPos.z = Math.max(rb.zMin + 0.25, Math.min(rb.zMax - 0.25, tryPos.z));
       }
+    } else {
+      // 廊下内：外壁だけ
+      tryPos.x = Math.max(-halfW + 0.2, Math.min(halfW - 0.2, tryPos.x));
     }
     room4Face.position.copy(tryPos);
     room4Face.position.y = 1.55;
@@ -3003,6 +3020,10 @@
     document.body.classList.add('state-playing');
     clearAllInput();
     setControlsVisible(true);
+    if (typeof clearCorridorCenterPath === 'function') clearCorridorCenterPath();
+    if (typeof clearCollidersBlockingFrontDoor === 'function') {
+      clearCollidersBlockingFrontDoor(CONFIG.corridorLength);
+    }
   }
 
   function showChaseHint(text) {
