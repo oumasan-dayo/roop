@@ -971,23 +971,9 @@
       scene.add(endRight);
     }
 
-    // ドア開口の奥は完全な黒（開口高さのみ・上部は壁）
+    // 正面ドア奥の真っ暗演出は使わない（延長廊下がそのまま見える）
     const extLen = 4;
-    const voidMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    // doorOpeningH は入口側で定義済みを再利用
-    const voidPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(doorGap + 0.35, doorOpeningH + 0.15),
-      voidMat
-    );
-    voidPlane.position.set(0, doorOpeningH / 2, L + 0.02);
-    scene.add(voidPlane);
-    const voidDepth = 5.0;
-    const voidBox = new THREE.Mesh(
-      new THREE.BoxGeometry(doorGap + 0.4, doorOpeningH + 0.2, voidDepth),
-      voidMat
-    );
-    voidBox.position.set(0, doorOpeningH / 2, L + 0.02 + voidDepth / 2);
-    scene.add(voidBox);
+    window._frontVoidMeshes = [];
     // 開口上部は壁材で塞ぐ（黒が天井まで見えないように）
     const frontHeaderH = Math.max(0.2, H - doorOpeningH);
     const frontHeader = new THREE.Mesh(
@@ -2107,6 +2093,9 @@
     }
     room4DoorState.animating = true;
     room4Unlocked = true;
+    // 直後から通過可能
+    if (room4DoorState.collider) room4DoorState.collider.active = false;
+    if (window._rightWallCol) window._rightWallCol.active = false;
     showMessage('鍵を使った。');
     retryCheckpoint = {
       hasKey: true,
@@ -2285,45 +2274,30 @@
     const wood = makeMat(0x5a4a38, 0.88, 0.04);
     const dark = makeMat(0x3a3228, 0.9, 0.02);
     const gray = makeMat(0x4a4540, 0.92, 0.03);
-    // 白い部屋出口 z=22.5・右壁。廊下へ出て -X を向くと左は -Z（入口方向）
-    // 出口すぐ左（z < 22.5）を壁沿いに密集させて塞ぐ。+Z（奥ドア方向）は空ける
     const doorZ = 22.5;
     const halfW = CONFIG.corridorWidth / 2;
-    // 左壁寄り（プレイヤーが部屋から出て正面を向いたときの左側）
-    // x は廊下幅いっぱい気味に積み、z は doorZ より手前側のみ
+    const W = CONFIG.corridorWidth;
+    // 部屋を出て廊下中央（-X）を向いたときの左側 = -Z（入口方向）
+    // 高く積み上げて「この方向は行き止まり」と一目で分かるようにする
     const pieces = [];
-    // 不規則な積み上げ
-    const seeds = [
-      [0.0, 0.4, -1.2, 1.5, 0.8, 1.0, 0.2],
-      [0.5, 0.9, -2.0, 0.7, 0.5, 0.6, -0.5],
-      [-0.5, 0.35, -2.8, 1.2, 0.7, 0.9, 0.6],
-      [0.2, 1.15, -3.5, 0.9, 0.4, 0.7, 0.1],
-      [-0.7, 0.5, -4.4, 1.4, 1.0, 0.8, -0.3],
-      [0.6, 0.25, -5.2, 0.8, 0.5, 1.1, 0.8],
-      [0.0, 0.7, -6.0, 1.6, 0.6, 0.7, 0.4],
-      [-0.4, 1.0, -6.8, 0.6, 0.8, 0.5, -0.2],
-      [0.4, 0.3, -7.6, 1.3, 0.55, 0.9, 0.5],
-      [-0.2, 0.85, -8.5, 1.1, 0.45, 0.7, -0.6],
-      [0.7, 0.4, -9.3, 0.9, 0.7, 0.6, 0.15],
-      [-0.6, 0.55, -10.2, 1.5, 0.9, 1.0, 0.35],
-      [0.1, 1.2, -11.0, 0.8, 0.35, 0.8, -0.4],
-      [0.3, 0.2, -12.0, 1.7, 0.4, 1.2, 0.25],
-      [-0.5, 0.65, -13.5, 1.2, 0.75, 0.85, -0.15]
-    ];
-    for (let i = 0; i < seeds.length; i++) {
-      const s = seeds[i];
-      pieces.push([s[0], s[1], doorZ + s[2], s[3], s[4], s[5], s[6]]);
+    for (let row = 0; row < 10; row++) {
+      for (let col = 0; col < 3; col++) {
+        const sx = 0.55 + (row % 3) * 0.15;
+        const sy = 0.4 + (col % 2) * 0.35 + (row % 2) * 0.2;
+        const sz = 0.5 + (col * 0.1);
+        pieces.push([
+          -halfW + 0.5 + col * 0.7 + (row % 2) * 0.15,
+          sy * 0.5 + (row % 4) * 0.35,
+          doorZ - 1.0 - row * 0.85,
+          sx, sy, sz,
+          (row + col) * 0.2
+        ]);
+      }
     }
-    // 出口すぐ横の壁沿いに追加の箱で隙間を埋める
-    for (let k = 0; k < 6; k++) {
-      pieces.push([
-        -halfW + 0.35 + (k % 3) * 0.35,
-        0.2 + (k % 2) * 0.35,
-        doorZ - 0.9 - k * 0.55,
-        0.55, 0.45 + (k % 3) * 0.15, 0.5,
-        k * 0.3
-      ]);
-    }
+    // 天井近くまで積む大きな塊
+    pieces.push([0.0, 1.1, doorZ - 4.5, 2.8, 2.2, 3.5, 0.1]);
+    pieces.push([-0.3, 0.9, doorZ - 8.0, 2.6, 1.8, 2.8, -0.15]);
+    pieces.push([0.2, 1.0, doorZ - 11.5, 2.9, 2.0, 3.0, 0.2]);
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
       const mat = i % 3 === 0 ? wood : (i % 3 === 1 ? dark : gray);
@@ -2331,21 +2305,12 @@
       mesh.position.set(p[0], p[1], p[2]);
       mesh.rotation.y = p[6];
       group.add(mesh);
-      addCollider(
-        p[0] - p[3] / 2 - 0.06,
-        0,
-        p[2] - p[5] / 2 - 0.06,
-        p[3] + 0.12,
-        Math.max(p[4] + 0.1, 0.8),
-        p[5] + 0.12
-      );
     }
-    // 入口方向へのすり抜け防止（出口より手前側のみ）
-    addCollider(-halfW, 0, doorZ - 14.5, W, 2.6, 13.2);
+    // 衝突：入口方向（-Z）だけ塞ぐ。+Z（正面ドア方向）は開けたまま
+    addCollider(-halfW, 0, doorZ - 14.0, W, 2.7, 12.5);
     scene.add(group);
     window._leftDebrisGroup = group;
   }
-
 
   function openFrontDoorForEscape() {
     if (frontDoorState) {
@@ -2358,7 +2323,6 @@
         if (interactables[i].id === 'door_front') interactables[i].radius = 0;
       }
     }
-    // Room4 扉も逃走中は通れるように
     if (room4DoorState) {
       room4DoorState.open = true;
       room4DoorState.animating = false;
@@ -2367,6 +2331,14 @@
       if (room4DoorState.collider) room4DoorState.collider.active = false;
       if (window._rightWallCol) window._rightWallCol.active = false;
     }
+    // 真っ暗板があれば除去
+    if (window._frontVoidMeshes) {
+      for (let i = 0; i < window._frontVoidMeshes.length; i++) {
+        scene.remove(window._frontVoidMeshes[i]);
+      }
+      window._frontVoidMeshes = [];
+    }
+    doorOpen = true;
     playBounds.zMaxClosed = playBounds.zMaxOpen;
   }
 
@@ -2512,7 +2484,10 @@
 
     playBounds.zMaxOpen = zExit + 1.5;
     playBounds.zMaxClosed = zExit + 1.5;
+    doorOpen = true;
     escapePhase = 'run';
+    // 延長が正面ドアの奥（+Z）にあることを保証
+    console.log('[escape] extended corridor from z=', L, 'to', zExit);
   }
 
   function spawnEscapeExit() {
@@ -2632,14 +2607,39 @@
 
     if (facePhase !== 'chase' || !room4Chase) return;
 
-    // プレイヤーを追跡（コリジョン尊重・壁／ドアを貫通しない）
+    // 最短ルート追跡：部屋↔廊下は必ず扉経由（直線で出口を塞がない）
     const halfW = playBounds.halfW;
+    const doorX = halfW - 0.2;
+    const doorZ = 22.5;
+    const faceInRoom = room4Face.position.x > halfW - 0.35;
+    const playerInRoom = player.position.x > halfW - 0.35;
     let targetX = player.position.x;
     let targetZ = player.position.z;
+    // 部屋と廊下が分かれているときは扉を中継
+    if (faceInRoom !== playerInRoom) {
+      const ddx = doorX - room4Face.position.x;
+      const ddz = doorZ - room4Face.position.z;
+      const dDoor = Math.sqrt(ddx * ddx + ddz * ddz);
+      if (dDoor > 0.55) {
+        targetX = doorX;
+        targetZ = doorZ;
+      }
+    } else if (faceInRoom && playerInRoom) {
+      // 同じ部屋内：プレイヤーへ。ただし出口付近に張り付いて塞がないよう少しオフセット
+      const toDoor = Math.abs(player.position.x - doorX) + Math.abs(player.position.z - doorZ);
+      if (toDoor < 1.2) {
+        // プレイヤーが出口付近 → 顔は少し奥から追う
+        targetX = player.position.x + 1.2;
+        targetZ = player.position.z;
+      }
+    } else {
+      // 廊下同士：通路中央寄りに経路
+      targetX = Math.max(-halfW + 0.35, Math.min(halfW - 0.35, player.position.x));
+    }
     const fdx = targetX - room4Face.position.x;
     const fdz = targetZ - room4Face.position.z;
     const fdist = Math.sqrt(fdx * fdx + fdz * fdz) || 1;
-    let spd = chaseFaceSpeed * 1.12;
+    let spd = chaseFaceSpeed * 1.08;
     if (escapeZones) {
       const fz = room4Face.position.z;
       if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.75;
@@ -2650,7 +2650,6 @@
     tryPos.x += (fdx / fdist) * spd * dt;
     tryPos.z += (fdz / fdist) * spd * dt;
     tryPos.y = 1.55;
-    // 軸分離でコリジョン解決（プレイヤーと同じ colliders）
     resolveFaceCollision(tryPos, prevFace, 'x');
     resolveFaceCollision(tryPos, prevFace, 'z');
     room4Face.position.copy(tryPos);
@@ -4066,9 +4065,11 @@
 
   function tryOpenBackDoor() {
     if (!backDoorState || backDoorState.open || backDoorState.animating) return;
-    // 通常は謎解き開始後のみ。逃走中は常に開放可
     if (!puzzleStarted && !room4Chase) return;
     backDoorState.animating = true;
+    if (backDoorState.collider) backDoorState.collider.active = false;
+    if (entranceBlockCollider) entranceBlockCollider.active = false;
+    doorOpen = true;
     if (actionBtn) actionBtn.classList.add('hidden');
   }
 
@@ -4570,6 +4571,9 @@
   function tryOpenFrontDoor() {
     if (!frontDoorState || frontDoorState.open || frontDoorState.animating) return;
     frontDoorState.animating = true;
+    // ボタン直後に通過可能（アニメ完了を待たない）
+    if (frontDoorState.collider) frontDoorState.collider.active = false;
+    doorOpen = true;
     if (actionBtn) actionBtn.classList.add('hidden');
   }
 
