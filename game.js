@@ -1872,17 +1872,29 @@
       }
       addRightPanel(z0, z1);
       addRightPanel(z2, z3);
-      // 開口上部
-      const headerH = H - doorH - 0.05;
-      if (headerH > 0.05) {
-        const header = new THREE.Mesh(
-          new THREE.PlaneGeometry(doorW + 0.16, headerH),
-          wallMat.clone()
-        );
-        header.rotation.y = -Math.PI / 2;
-        header.position.set(halfW, doorH + headerH / 2 + 0.02, z);
-        window._rightWallGroup.add(header);
+      // 開口上部：左右パネルと継ぎ目なく、天井まで同じ壁紙で塞ぐ
+      const headerH = Math.max(0.15, H - doorH);
+      const headerW = doorW + 0.28; // 開口より少し広く白漏れ防止
+      const headerMat = wallMat.clone();
+      if (headerMat.map) {
+        headerMat.map = headerMat.map.clone();
+        headerMat.map.repeat.set(headerW / 4.0, headerH / 2.6);
+        headerMat.map.needsUpdate = true;
       }
+      const header = new THREE.Mesh(
+        new THREE.PlaneGeometry(headerW, headerH),
+        headerMat
+      );
+      header.rotation.y = -Math.PI / 2;
+      header.position.set(halfW - 0.005, doorH + headerH / 2, z);
+      window._rightWallGroup.add(header);
+      // 枠の裏に薄い壁を足して隙間の白を消す
+      const seal = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, headerH + 0.1, headerW + 0.05),
+        wallMat.clone()
+      );
+      seal.position.set(halfW - 0.04, doorH + headerH / 2, z);
+      window._rightWallGroup.add(seal);
     }
 
     // 扉（廊下側から見て右壁、開口に埋め込み）
@@ -2117,9 +2129,10 @@
       if (window._rightWallCol) window._rightWallCol.active = false;
       const halfW = CONFIG.corridorWidth / 2;
       const zDoor = 22.5;
-      const gap = 0.65;
-      addCollider(halfW, 0, -1, 0.15, CONFIG.corridorHeight, zDoor - gap + 1);
-      addCollider(halfW, 0, zDoor + gap, 0.15, CONFIG.corridorHeight, CONFIG.corridorLength - zDoor);
+      // 開口はドア幅より広め（透明壁で詰まるのを防ぐ）
+      const gap = 0.75;
+      addCollider(halfW, 0, -1, 0.12, CONFIG.corridorHeight, zDoor - gap + 1);
+      addCollider(halfW, 0, zDoor + gap, 0.12, CONFIG.corridorHeight, CONFIG.corridorLength - (zDoor + gap) + 1);
       for (let i = 0; i < interactables.length; i++) {
         if (interactables[i].id === 'door_room4') interactables[i].radius = 0;
       }
@@ -2307,7 +2320,7 @@
       group.add(mesh);
     }
     // 衝突：入口方向（-Z）だけ塞ぐ。+Z（正面ドア方向）は開けたまま
-    addCollider(-halfW, 0, doorZ - 14.0, W, 2.7, 12.5);
+    addCollider(-halfW, 0, doorZ - 14.0, W, 2.7, 11.5); // maxZ ≈ doorZ-2.5、出口前は空け
     scene.add(group);
     window._leftDebrisGroup = group;
   }
@@ -2448,29 +2461,55 @@
       pushZ: zPush, exitZ: zExit
     };
 
-    // --- 綱渡り：細い足場＋左右は真っ暗な穴 ---
-    // 既存床の上に穴表現（暗いボックス）
+    // --- 綱渡り：中央の細い板＋左右は深い闇 ---
+    const bridgeLen = zBridge1 - zBridge0;
+    const bridgeMid = (zBridge0 + zBridge1) / 2;
+    const pitMat = new THREE.MeshStandardMaterial({ color: 0x030303, roughness: 1, metalness: 0 });
+    const pitSideMat = new THREE.MeshStandardMaterial({ color: 0x0a0908, roughness: 1, metalness: 0 });
+    // 床をくり抜いたように左右を落とす
     for (let side = -1; side <= 1; side += 2) {
-      const pit = new THREE.Mesh(
-        new THREE.BoxGeometry(1.25, 0.5, zBridge1 - zBridge0),
-        new THREE.MeshStandardMaterial({ color: 0x060504, roughness: 1, metalness: 0 })
-      );
-      pit.position.set(side * 1.1, -0.28, (zBridge0 + zBridge1) / 2);
-      scene.add(pit);
+      // 穴の底
+      const bottom = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.08, bridgeLen), pitMat);
+      bottom.position.set(side * 1.05, -2.4, bridgeMid);
+      scene.add(bottom);
+      // 穴の内側の壁（深さが見える）
+      const inner = new THREE.Mesh(new THREE.PlaneGeometry(bridgeLen, 2.5), pitSideMat);
+      inner.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      inner.position.set(side * 0.32, -1.15, bridgeMid);
+      scene.add(inner);
+      const outer = new THREE.Mesh(new THREE.PlaneGeometry(bridgeLen, 2.5), pitSideMat.clone());
+      outer.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
+      outer.position.set(side * (halfW - 0.02), -1.15, bridgeMid);
+      scene.add(outer);
+      // 手前・奥の縦壁
+      const cap = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 2.5), pitSideMat.clone());
+      cap.position.set(side * 1.05, -1.15, zBridge0 + 0.02);
+      scene.add(cap);
+      const cap2 = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 2.5), pitSideMat.clone());
+      cap2.rotation.y = Math.PI;
+      cap2.position.set(side * 1.05, -1.15, zBridge1 - 0.02);
+      scene.add(cap2);
     }
-    // 細い木の足場
+    // 板（木目寄り）
     const plankMat = new THREE.MeshStandardMaterial({
-      color: 0x6b5340, roughness: 0.75, metalness: 0.05
+      color: 0x7a6048, roughness: 0.7, metalness: 0.04
     });
-    const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(0.55, 0.1, zBridge1 - zBridge0),
-      plankMat
-    );
-    plank.position.set(0, 0.05, (zBridge0 + zBridge1) / 2);
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.09, bridgeLen + 0.3), plankMat);
+    plank.position.set(0, 0.04, bridgeMid);
     scene.add(plank);
-    // 足場以外は通れない（左右）
-    addCollider(-halfW, 0, zBridge0, (W - 0.55) / 2 - 0.05, H, zBridge1 - zBridge0);
-    addCollider(0.55 / 2 + 0.05, 0, zBridge0, (W - 0.55) / 2 - 0.05, H, zBridge1 - zBridge0);
+    // 板の端の支え
+    for (let t = 0; t < 2; t++) {
+      const beam = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 0.08, 0.12),
+        new THREE.MeshStandardMaterial({ color: 0x4a3a2a, roughness: 0.85 })
+      );
+      beam.position.set(0, -0.02, t === 0 ? zBridge0 - 0.05 : zBridge1 + 0.05);
+      scene.add(beam);
+    }
+    // 当たり：板の外側は落下扱い（移動不可）
+    const sideWCol = (W - 0.48) / 2 - 0.02;
+    addCollider(-halfW, 0, zBridge0, sideWCol, H, bridgeLen);
+    addCollider(0.48 / 2 + 0.02, 0, zBridge0, sideWCol, H, bridgeLen);
 
     // --- くぐる：積み家具＋下に隙間 ---
     const crawlZc = (zCrawl0 + zCrawl1) / 2;
@@ -2543,21 +2582,39 @@
   }
 
   function clearCollidersBlockingFrontDoor(L) {
-    const openMinX = -0.55;
-    const openMaxX = 0.55;
+    // 通路中央（逃げ道）を塞ぐコリジョンを広めに解除
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (c.active === false) continue;
-      // 正面ドア開口を完全に塞いでいる薄い壁／ドアを解除
-      const coversDoorX = c.min.x < openMinX + 0.1 && c.max.x > openMaxX - 0.1;
-      const nearDoorZ = c.max.z > L - 0.6 && c.min.z < L + 0.8;
-      const notSideOnly = (c.max.x - c.min.x) > 0.9;
-      if (coversDoorX && nearDoorZ && notSideOnly) {
+      const midX = (c.min.x + c.max.x) * 0.5;
+      const spansCenter = c.min.x < -0.35 && c.max.x > 0.35;
+      const nearFront = c.max.z > L - 1.0 && c.min.z < L + 2.5;
+      // 正面ドア付近で中央を塞ぐもの
+      if (spansCenter && nearFront) {
+        c.active = false;
+        continue;
+      }
+      // 部屋出口〜廊下（z=20〜28）で中央を塞ぐ広い箱
+      const nearExit = c.max.z > 20 && c.min.z < 28;
+      if (spansCenter && nearExit && (c.max.x - c.min.x) > 1.5) {
         c.active = false;
       }
     }
     if (frontDoorState && frontDoorState.collider) {
       frontDoorState.collider.active = false;
+    }
+    if (room4DoorState && room4DoorState.collider) {
+      room4DoorState.collider.active = false;
+    }
+    if (window._rightWallCol) window._rightWallCol.active = false;
+    // 部屋出口〜正面ドアまでの中央通路を再確認
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (c.active === false) continue;
+      if (c.min.x < -0.4 && c.max.x > 0.4 && c.min.z > 18 && c.max.z < L + 3) {
+        // 全幅に近いものは荷物封鎖以外を疑う（z が 20 超で入口封鎖でない）
+        if ((c.max.x - c.min.x) > 2.5 && c.min.z > 19.5) c.active = false;
+      }
     }
   }
 
@@ -2721,8 +2778,23 @@
     tryPos.x += (fdx / fdist) * spd * dt;
     tryPos.z += (fdz / fdist) * spd * dt;
     tryPos.y = 1.55;
-    resolveFaceCollision(tryPos, prevFace, 'x');
-    resolveFaceCollision(tryPos, prevFace, 'z');
+    // 扉付近は当たりを無視して通す
+    const nearDoor = Math.abs(tryPos.z - doorZ) < 2.2 && tryPos.x > halfW - 1.8;
+    if (!nearDoor) {
+      resolveFaceCollision(tryPos, prevFace, 'x');
+      resolveFaceCollision(tryPos, prevFace, 'z');
+    }
+    // ソフト境界のみ（壁貫通防止）
+    if (tryPos.x < halfW - 0.15) {
+      tryPos.x = Math.max(-halfW + 0.15, Math.min(halfW - 0.15, tryPos.x));
+    } else {
+      // 部屋側
+      if (window._room4Bounds) {
+        const rb = window._room4Bounds;
+        tryPos.x = Math.min(rb.xMax - 0.2, tryPos.x);
+        tryPos.z = Math.max(rb.zMin + 0.2, Math.min(rb.zMax - 0.2, tryPos.z));
+      }
+    }
     room4Face.position.copy(tryPos);
     room4Face.position.y = 1.55;
     faceLookAtPlayer();
