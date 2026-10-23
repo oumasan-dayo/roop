@@ -1069,8 +1069,8 @@
       addCollider(-halfW - wallThick, 0, L - 0.05, sideW + wallThick, H, wallThick);
       addCollider(halfW - sideW, 0, L - 0.05, sideW + wallThick, H, wallThick);
     }
-    // 延長廊下の行き止まり
-    addCollider(-halfW - wallThick, 0, L + extLen, W + wallThick * 2, H, wallThick);
+    // 延長廊下の行き止まり（逃走延長時に解除する）
+    window._frontStubWallCol = addCollider(-halfW - wallThick, 0, L + extLen, W + wallThick * 2, H, wallThick);
 
     playBounds = {
       halfW: halfW,
@@ -2352,6 +2352,7 @@
       window._frontVoidMeshes = [];
     }
     doorOpen = true;
+    if (window._frontStubWallCol) window._frontStubWallCol.active = false;
     playBounds.zMaxClosed = playBounds.zMaxOpen;
   }
 
@@ -2619,18 +2620,31 @@
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (c.active === false) continue;
-      // 左右の外壁は残す
-      if (c.max.x < -halfW + 0.55) continue;
-      if (c.min.x > halfW - 0.55) continue;
-      // 中央帯を横断し、部屋出口〜正面ドア先を塞ぐもの
+      // 左右の細長い外壁は残す
+      const thinSide = (c.max.x - c.min.x) < 0.55;
+      if (thinSide && (c.max.x < -halfW + 0.6 || c.min.x > halfW - 0.6)) continue;
+
       const crossesCenter = c.min.x < -0.25 && c.max.x > 0.25;
       if (!crossesCenter) continue;
-      if (c.max.z > 20.5 && c.min.z < L + 4) {
+
+      // 正面ドア付近〜旧行き止まり（L+4）〜延長入口をすべて解除
+      // ※ min.z < L+4 だと L+4 の壁が残るので、L+8 まで含める
+      if (c.max.z > 20.5 && c.min.z < L + 8) {
         c.active = false;
       }
     }
     if (frontDoorState && frontDoorState.collider) frontDoorState.collider.active = false;
     if (room4DoorState && room4DoorState.collider) room4DoorState.collider.active = false;
+    if (window._frontStubWallCol) window._frontStubWallCol.active = false;
+
+    // 建設時の「延長4m先の行き止まり壁」を名前でなく座標で再スキャン
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (c.active === false) continue;
+      if (c.min.z >= L + 3.5 && c.min.z <= L + 5.5 && (c.max.x - c.min.x) > 2.0) {
+        c.active = false;
+      }
+    }
   }
 
   function spawnEscapeExit() {
@@ -2750,41 +2764,60 @@
 
     if (facePhase !== 'chase' || !room4Chase) return;
 
-    // 最短ルート追跡：部屋↔廊下は必ず扉経由（直線で出口を塞がない）
+    // 最短ルート：部屋↔廊下は扉を必ず経由してからプレイヤーへ
     const halfW = playBounds.halfW;
-    const doorX = halfW - 0.2;
     const doorZ = 22.5;
-    const faceInRoom = room4Face.position.x > halfW - 0.35;
-    const playerInRoom = player.position.x > halfW - 0.35;
+    // 扉の中心（閾値ちょうど）。部屋側→廊下側へ順番にWaypoint
+    const doorXRoom = halfW + 0.35;
+    const doorXMid = halfW;
+    const doorXHall = halfW - 0.45;
+    const z0 = window._room4DoorOpenZ0 != null ? window._room4DoorOpenZ0 : doorZ - 1.0;
+    const z1 = window._room4DoorOpenZ1 != null ? window._room4DoorOpenZ1 : doorZ + 1.0;
+
+    const faceX = room4Face.position.x;
+    const faceZ = room4Face.position.z;
+    const faceInRoom = faceX > halfW + 0.1;
+    const faceInHall = faceX < halfW - 0.15;
+    const playerInRoom = player.position.x > halfW - 0.1;
+
     let targetX = player.position.x;
     let targetZ = player.position.z;
-    // 部屋と廊下が分かれているときは扉を中継
-    if (faceInRoom !== playerInRoom) {
-      const ddx = doorX - room4Face.position.x;
-      const ddz = doorZ - room4Face.position.z;
-      const dDoor = Math.sqrt(ddx * ddx + ddz * ddz);
-      if (dDoor > 0.55) {
-        targetX = doorX;
+
+    if (faceInRoom && !playerInRoom) {
+      // 部屋にいる → まず扉の部屋側 → 中央 → 廊下側
+      if (faceX > doorXRoom + 0.15) {
+        targetX = doorXRoom;
+        targetZ = doorZ;
+      } else {
+        targetX = doorXHall;
         targetZ = doorZ;
       }
-    } else if (faceInRoom && playerInRoom) {
-      // 同じ部屋内：プレイヤーへ。ただし出口付近に張り付いて塞がないよう少しオフセット
-      const toDoor = Math.abs(player.position.x - doorX) + Math.abs(player.position.z - doorZ);
-      if (toDoor < 1.2) {
-        // プレイヤーが出口付近 → 顔は少し奥から追う
-        targetX = player.position.x + 1.2;
-        targetZ = player.position.z;
+    } else if (faceInHall && playerInRoom) {
+      if (faceX < doorXHall - 0.1) {
+        targetX = doorXHall;
+        targetZ = doorZ;
+      } else {
+        targetX = doorXRoom;
+        targetZ = doorZ;
       }
-    } else {
-      // 廊下同士：通路中央寄りに経路
+    } else if (faceInHall) {
       targetX = Math.max(-halfW + 0.35, Math.min(halfW - 0.35, player.position.x));
+      targetZ = player.position.z;
+    } else if (faceInRoom && playerInRoom) {
+      targetX = player.position.x;
+      targetZ = player.position.z;
+    } else {
+      // 扉の閾値付近：廊下側へ押し出してから追う
+      targetX = doorXHall;
+      targetZ = doorZ;
     }
-    const fdx = targetX - room4Face.position.x;
-    const fdz = targetZ - room4Face.position.z;
+
+    const fdx = targetX - faceX;
+    const fdz = targetZ - faceZ;
     const fdist = Math.sqrt(fdx * fdx + fdz * fdz) || 1;
-    let spd = chaseFaceSpeed * 1.08;
+    let spd = chaseFaceSpeed * 1.1;
     if (escapeZones) {
-      const fz = room4Face.position.z;
+      const fz = faceZ;
       if (fz > escapeZones.bridgeZ0 - 0.5 && fz < escapeZones.bridgeZ1 + 0.5) spd *= 0.75;
       if (fz > escapeZones.crawlZ0 - 0.5 && fz < escapeZones.crawlZ1 + 0.5) spd *= 0.6;
     }
@@ -2792,24 +2825,21 @@
     tryPos.x += (fdx / fdist) * spd * dt;
     tryPos.z += (fdz / fdist) * spd * dt;
     tryPos.y = 1.55;
-    // コリジョンは使わない。領域クランプのみ（扉ゾーンは常に通過可）
-    const z0 = window._room4DoorOpenZ0 != null ? window._room4DoorOpenZ0 : doorZ - 1.0;
-    const z1 = window._room4DoorOpenZ1 != null ? window._room4DoorOpenZ1 : doorZ + 1.0;
-    const inDoorWay = tryPos.z >= z0 - 0.3 && tryPos.z <= z1 + 0.3;
-    if (inDoorWay) {
-      // 扉の中は x を部屋〜廊下へ自由に跨がせる
-      if (window._room4Bounds) {
-        tryPos.x = Math.max(-halfW + 0.2, Math.min(window._room4Bounds.xMax - 0.2, tryPos.x));
-      }
-    } else if (tryPos.x >= halfW - 0.05) {
-      // 部屋内
+
+    // 扉の Z 範囲内なら X を部屋↔廊下で自由に跨ぐ（クランプで止めない）
+    const inDoorZ = tryPos.z >= z0 - 0.4 && tryPos.z <= z1 + 0.4;
+    if (inDoorZ) {
+      const xMin = -halfW + 0.2;
+      const xMax = window._room4Bounds ? window._room4Bounds.xMax - 0.2 : halfW + 40;
+      tryPos.x = Math.max(xMin, Math.min(xMax, tryPos.x));
+      tryPos.z = Math.max(z0 - 0.2, Math.min(z1 + 0.2, tryPos.z));
+    } else if (tryPos.x >= halfW + 0.05) {
       if (window._room4Bounds) {
         const rb = window._room4Bounds;
-        tryPos.x = Math.max(halfW - 0.05, Math.min(rb.xMax - 0.2, tryPos.x));
+        tryPos.x = Math.max(halfW + 0.05, Math.min(rb.xMax - 0.2, tryPos.x));
         tryPos.z = Math.max(rb.zMin + 0.25, Math.min(rb.zMax - 0.25, tryPos.z));
       }
     } else {
-      // 廊下内：外壁だけ
       tryPos.x = Math.max(-halfW + 0.2, Math.min(halfW - 0.2, tryPos.x));
     }
     room4Face.position.copy(tryPos);
