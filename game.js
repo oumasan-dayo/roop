@@ -2346,27 +2346,47 @@
     if (window._chaseExtended) return;
     window._chaseExtended = true;
     spawnLeftDebrisPile();
-    // 逃走路確保：正面ドアを開けてコリジョンを外す（調査不要で奥へ進める）
     openFrontDoorForEscape();
+
     const L = CONFIG.corridorLength;
     const W = CONFIG.corridorWidth;
     const H = CONFIG.corridorHeight;
     const halfW = W / 2;
-    const extra = 78; // 逃走コースを大幅に延長
-    const wallMat = sharedWallMat
-      ? sharedWallMat.clone()
-      : new THREE.MeshStandardMaterial({ color: 0xb8ac98, roughness: 0.92 });
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0xa09078, roughness: 0.85 });
-    const ceilMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 0.95 });
-    const darkMat = makeMat(0x3a3228, 0.9, 0.02);
-    const wood = makeMat(0x5a4a38, 0.88, 0.04);
+    const extra = 78;
 
-    // 床・天井・壁（延長）
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, extra), floorMat);
-    floor.position.set(0, 0.01, L + extra / 2);
+    // 正面ドア開口付近の進行阻害コリジョンを解除
+    clearCollidersBlockingFrontDoor(L);
+
+    // 通常廊下と同じ質感
+    const floorTex = createWoodFloorTexture(256);
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(extra / 3.2, W / 3.2);
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: floorTex, roughness: 0.82, metalness: 0.05, color: 0xc4b49a
+    });
+    const ceilTex = createNoiseTexture(128, 58, 55, 50, 14);
+    ceilTex.wrapS = ceilTex.wrapT = THREE.RepeatWrapping;
+    ceilTex.repeat.set(extra / 2.5, W / 2.5);
+    const ceilMat = new THREE.MeshStandardMaterial({
+      map: ceilTex, roughness: 0.94, metalness: 0.0, color: 0x7a7468
+    });
+    const wallTex = createWallTexture(256);
+    wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
+    wallTex.repeat.set(extra / 4.0, H / 2.6);
+    const wallMat = new THREE.MeshStandardMaterial({
+      map: wallTex, roughness: 0.92, metalness: 0.02, color: 0xc4b8a4
+    });
+    const wood = makeMat(0x5a4a38, 0.88, 0.04);
+    const dark = makeMat(0x3a3228, 0.9, 0.02);
+    const gray = makeMat(0x4a4540, 0.92, 0.03);
+    if (wood.map) { /* keep */ }
+
+    // 床・天井・壁
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(W, 0.04, extra), floorMat);
+    floor.position.set(0, -0.02, L + extra / 2);
     scene.add(floor);
-    const ceil = new THREE.Mesh(new THREE.BoxGeometry(W, 0.05, extra), ceilMat);
-    ceil.position.set(0, H, L + extra / 2);
+    const ceil = new THREE.Mesh(new THREE.BoxGeometry(W, 0.04, extra), ceilMat);
+    ceil.position.set(0, H + 0.02, L + extra / 2);
     scene.add(ceil);
     const left = new THREE.Mesh(new THREE.PlaneGeometry(extra, H), wallMat);
     left.rotation.y = Math.PI / 2;
@@ -2376,17 +2396,46 @@
     right.rotation.y = -Math.PI / 2;
     right.position.set(halfW, H / 2, L + extra / 2);
     scene.add(right);
-    addCollider(-halfW - 0.5, 0, L, 0.5, H, extra);
-    addCollider(halfW, 0, L, 0.5, H, extra);
+    // 壁コリジョン（通路中央は空けたまま）
+    addCollider(-halfW - 0.4, 0, L, 0.4, H, extra);
+    addCollider(halfW, 0, L, 0.4, H, extra);
 
-    // ゾーン定義（廊下 L から先）
-    // 1) 通常走  L+0〜L+12
-    // 2) 極細通路 L+12〜L+22  左右に穴
-    // 3) 通常    L+22〜L+30
-    // 4) くぐる  L+30〜L+38
-    // 5) 通常    L+38〜L+46
-    // 6) 家具    L+48
-    // 7) 直線    L+52〜L+extra-3 出口
+    // 汚れ・シミ（壁）
+    for (let i = 0; i < 8; i++) {
+      const stain = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.6 + Math.random() * 0.8, 0.5 + Math.random() * 0.7),
+        new THREE.MeshStandardMaterial({
+          color: 0x6a5a48, roughness: 1, metalness: 0, transparent: true, opacity: 0.35
+        })
+      );
+      const side = i % 2 === 0 ? -1 : 1;
+      stain.position.set(side * (halfW - 0.02), 0.6 + Math.random() * 1.4, L + 6 + i * 8);
+      stain.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+      scene.add(stain);
+    }
+
+    // 散乱家具（通路を塞がない位置）
+    const scatter = [
+      [-1.1, 0.25, L + 5, 0.5, 0.5, 0.4],
+      [1.15, 0.2, L + 9, 0.4, 0.4, 0.5],
+      [-1.0, 0.35, L + 25, 0.55, 0.7, 0.35],
+      [1.05, 0.22, L + 33, 0.45, 0.45, 0.45],
+      [-1.15, 0.3, L + 55, 0.5, 0.6, 0.4],
+      [1.1, 0.18, L + 62, 0.6, 0.35, 0.5]
+    ];
+    for (let i = 0; i < scatter.length; i++) {
+      const s = scatter[i];
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(s[3], s[4], s[5]),
+        i % 2 ? wood : dark
+      );
+      mesh.position.set(s[0], s[1], s[2]);
+      mesh.rotation.y = i * 0.4;
+      scene.add(mesh);
+      addCollider(s[0] - s[3] / 2, 0, s[2] - s[5] / 2, s[3], s[4], s[5]);
+    }
+
+    // ゾーン
     const zBridge0 = L + 12;
     const zBridge1 = L + 22;
     const zCrawl0 = L + 30;
@@ -2399,95 +2448,117 @@
       pushZ: zPush, exitZ: zExit
     };
 
-    // --- 極細通路：中央の細い床、左右は穴（落下＝失敗）---
-    // 既存床を穴扱いにするため、左右に黒穴メッシュ＋落下判定ゾーン
+    // --- 綱渡り：細い足場＋左右は真っ暗な穴 ---
+    // 既存床の上に穴表現（暗いボックス）
     for (let side = -1; side <= 1; side += 2) {
       const pit = new THREE.Mesh(
-        new THREE.BoxGeometry(1.15, 0.08, zBridge1 - zBridge0),
-        new THREE.MeshBasicMaterial({ color: 0x050505 })
+        new THREE.BoxGeometry(1.25, 0.5, zBridge1 - zBridge0),
+        new THREE.MeshStandardMaterial({ color: 0x060504, roughness: 1, metalness: 0 })
       );
-      pit.position.set(side * 1.05, -0.02, (zBridge0 + zBridge1) / 2);
+      pit.position.set(side * 1.1, -0.28, (zBridge0 + zBridge1) / 2);
       scene.add(pit);
     }
-    // 中央足場を少し高く
+    // 細い木の足場
+    const plankMat = new THREE.MeshStandardMaterial({
+      color: 0x6b5340, roughness: 0.75, metalness: 0.05
+    });
     const plank = new THREE.Mesh(
-      new THREE.BoxGeometry(0.85, 0.12, zBridge1 - zBridge0),
-      wood
+      new THREE.BoxGeometry(0.55, 0.1, zBridge1 - zBridge0),
+      plankMat
     );
-    plank.position.set(0, 0.06, (zBridge0 + zBridge1) / 2);
+    plank.position.set(0, 0.05, (zBridge0 + zBridge1) / 2);
     scene.add(plank);
-    // 足場の外側は通れないよう横壁
-    addCollider(-halfW, 0, zBridge0, 0.95, H, zBridge1 - zBridge0);
-    addCollider(0.55, 0, zBridge0, halfW - 0.55 + 0.5, H, zBridge1 - zBridge0);
+    // 足場以外は通れない（左右）
+    addCollider(-halfW, 0, zBridge0, (W - 0.55) / 2 - 0.05, H, zBridge1 - zBridge0);
+    addCollider(0.55 / 2 + 0.05, 0, zBridge0, (W - 0.55) / 2 - 0.05, H, zBridge1 - zBridge0);
 
-    // --- くぐる障害：低い梁 ---
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(W - 0.3, 1.4, 2.2), darkMat);
-    beam.position.set(0, H - 0.55, (zCrawl0 + zCrawl1) / 2);
-    scene.add(beam);
-    addCollider(-halfW + 0.1, 1.15, zCrawl0 + 0.3, W - 0.2, 1.6, zCrawl1 - zCrawl0 - 0.6);
-    // 足元の散乱物
-    for (let i = 0; i < 5; i++) {
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(0.4 + Math.random() * 0.3, 0.25, 0.35),
-        i % 2 ? wood : darkMat
-      );
-      box.position.set((i - 2) * 0.45, 0.12, zCrawl0 + 1.2 + i * 0.5);
-      box.rotation.y = i * 0.4;
-      scene.add(box);
+    // --- くぐる：積み家具＋下に隙間 ---
+    const crawlZc = (zCrawl0 + zCrawl1) / 2;
+    const pilePieces = [
+      [-1.0, 0.9, crawlZc - 1.2, 0.7, 1.8, 0.6],
+      [-0.4, 1.1, crawlZc - 0.5, 0.8, 2.0, 0.7],
+      [0.2, 0.95, crawlZc + 0.2, 0.9, 1.9, 0.8],
+      [0.9, 1.05, crawlZc + 0.9, 0.7, 1.85, 0.6],
+      [-0.7, 1.35, crawlZc + 0.4, 0.6, 1.2, 0.5],
+      [0.5, 1.4, crawlZc - 0.8, 0.65, 1.1, 0.55],
+      [0.0, 1.6, crawlZc, 1.4, 0.9, 1.2]
+    ];
+    for (let i = 0; i < pilePieces.length; i++) {
+      const p = pilePieces[i];
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(p[3], p[4], p[5]), i % 2 ? wood : dark);
+      mesh.position.set(p[0], p[1], p[2]);
+      mesh.rotation.y = (i % 5) * 0.15;
+      scene.add(mesh);
     }
+    // 当たりは上だけ（足元 y=0〜0.95 は通れる隙間）
+    addCollider(-halfW + 0.1, 0.95, zCrawl0 + 0.4, W - 0.2, 1.8, zCrawl1 - zCrawl0 - 0.8);
 
     // --- 家具をどかす ---
-    pushFurnitureMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1.35, 1.1, 0.7),
-      wood
-    );
-    pushFurnitureMesh.position.set(0.15, 0.55, zPush);
+    pushFurnitureMesh = new THREE.Group();
+    const mainCab = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.35, 0.65), wood);
+    mainCab.position.set(0, 0.67, 0);
+    pushFurnitureMesh.add(mainCab);
+    const drawer = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.25, 0.08), dark);
+    drawer.position.set(0, 0.5, 0.36);
+    pushFurnitureMesh.add(drawer);
+    pushFurnitureMesh.position.set(0.1, 0, zPush);
     scene.add(pushFurnitureMesh);
-    window._pushCol = addCollider(-0.55, 0, zPush - 0.45, 1.5, 1.2, 0.9);
+    window._pushCol = addCollider(-0.65, 0, zPush - 0.4, 1.5, 1.4, 0.85);
     pushFurnitureDone = false;
 
-    // 逆走ブロック
+    // 逆走ブロック（入口側）
     const block = new THREE.Mesh(
-      new THREE.BoxGeometry(W - 0.2, H, 0.3),
+      new THREE.BoxGeometry(W - 0.15, H, 0.35),
       new THREE.MeshStandardMaterial({ color: 0x2a241c, roughness: 0.9 })
     );
     block.position.set(0, H / 2, 1.2);
     scene.add(block);
-    addCollider(-halfW + 0.1, 0, 1.0, W - 0.2, H, 0.4);
+    addCollider(-halfW + 0.05, 0, 1.0, W - 0.1, H, 0.4);
     window._chaseBlockMesh = block;
 
-    // 出口ドア見た目（奥）
+    // 出口ドア（木目・両面）
     const exitDoorGroup = new THREE.Group();
     exitDoorGroup.position.set(0, 0, zExit);
     const exitDoorMat = makeMat(0x4a3c30, 0.78, 0.08);
+    exitDoorMat.side = THREE.DoubleSide;
     const exitDoor = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2, 0.08), exitDoorMat);
     exitDoor.position.set(0, 1.1, 0);
     exitDoorGroup.add(exitDoor);
-    // 遮光はドアの奥側のみ
-    // 遮光用の黒面は付けない（表裏とも木目）
-    exitDoorMat.side = THREE.DoubleSide;
     const glow = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.9, 2.0),
-      new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.55, depthWrite: false })
+      new THREE.PlaneGeometry(0.85, 1.9),
+      new THREE.MeshBasicMaterial({ color: 0xf5f2ea, transparent: true, opacity: 0.4, depthWrite: false })
     );
-    glow.position.set(0, 1.1, -0.06);
+    glow.position.set(0, 1.1, -0.05);
     exitDoorGroup.add(glow);
     scene.add(exitDoorGroup);
     window._exitDoorGroup = exitDoorGroup;
     window._escapeExitZ = zExit;
-
-    if (escapeExitMesh) {
-      scene.remove(escapeExitMesh);
-      escapeExitMesh = null;
-    }
+    if (escapeExitMesh) scene.remove(escapeExitMesh);
     escapeExitMesh = exitDoorGroup;
 
     playBounds.zMaxOpen = zExit + 1.5;
     playBounds.zMaxClosed = zExit + 1.5;
     doorOpen = true;
     escapePhase = 'run';
-    // 延長が正面ドアの奥（+Z）にあることを保証
-    console.log('[escape] extended corridor from z=', L, 'to', zExit);
+  }
+
+  function clearCollidersBlockingFrontDoor(L) {
+    const openMinX = -0.55;
+    const openMaxX = 0.55;
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (c.active === false) continue;
+      // 正面ドア開口を完全に塞いでいる薄い壁／ドアを解除
+      const coversDoorX = c.min.x < openMinX + 0.1 && c.max.x > openMaxX - 0.1;
+      const nearDoorZ = c.max.z > L - 0.6 && c.min.z < L + 0.8;
+      const notSideOnly = (c.max.x - c.min.x) > 0.9;
+      if (coversDoorX && nearDoorZ && notSideOnly) {
+        c.active = false;
+      }
+    }
+    if (frontDoorState && frontDoorState.collider) {
+      frontDoorState.collider.active = false;
+    }
   }
 
   function spawnEscapeExit() {
@@ -3657,12 +3728,16 @@
    * 角に食い込んでも反対側へ飛ばさない
    */
   function resolveFaceCollision(pos, prev, axis) {
-    const r = 0.45;
-    const pMinY = 0.3;
-    const pMaxY = 2.2;
+    // 最小限：壁貫通だけ防ぐ（家具・低い障害は無視して扉を通れる）
+    const r = 0.12;
+    const pMinY = 0.8;
+    const pMaxY = 2.1;
     for (let i = 0; i < colliders.length; i++) {
       const c = colliders[i];
       if (c.active === false) continue;
+      // 高さの低い障害・床上の散乱物は無視
+      const ch = c.max.y - c.min.y;
+      if (ch < 1.6) continue;
       const minX = c.min.x - r;
       const maxX = c.max.x + r;
       const minZ = c.min.z - r;
